@@ -25,7 +25,7 @@ void signal_handler(int sig) {
     }
 }
 
-s/ UDP에서 받은 패킷 처리
+// UDP에서 받은 패킷 처리
 void handle_udp_to_tun(int udp_fd, int tun_fd) {
     uint8_t buffer[2048];
     struct sockaddr_in client_addr;
