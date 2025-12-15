@@ -73,8 +73,9 @@ int crypto_ecdh(uint8_t *shared_secret,
                 const uint8_t *my_private_key,
                 const uint8_t *their_public_key) {
     
-    int ret = crypto_scalarmult(shared_secret, my_private_key, their_public_key);
-    
+    //int ret = crypto_scalarmult(shared_secret, my_private_key, their_public_key);
+    int ret = crypto_box_beforenm(shared_secret, their_public_key, my_private_key);
+
     if (ret != 0) {
         fprintf(stderr, "❌ ECDH failed\n");
         return -1;

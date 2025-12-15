@@ -48,7 +48,8 @@ typedef struct {
     uint8_t status;          // 0=성공, 1=실패
     uint32_t vpn_ip;         // 할당된 VPN IP (네트워크 바이트 오더)
     uint32_t session_id;     // 세션 ID
-} connect_response_t;
+    uint8_t server_public_key[32];
+} __attribute__((packed)) connect_response_t;
 #pragma pack(pop)
 
 // 데이터 패킷

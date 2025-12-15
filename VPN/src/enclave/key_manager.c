@@ -104,17 +104,45 @@ void get_server_public_key(key_manager_t *km, uint8_t *public_key) {
 int perform_handshake(key_manager_t *km, uint32_t vpn_ip,
                       const uint8_t *client_public_key,
                       uint8_t *session_key_out) {
-    
+   
+
+    // ✅ 디버깅: 입력 출력
+    printf("   🔐 Enclave ECDH:\n");
+    printf("      Server private key: ");
+    for (int i = 0; i < 8; i++) {
+        printf("%02x", km->server_private_key[i]);
+    }
+    printf("...\n");
+    printf("      Client public key: ");
+    for (int i = 0; i < 8; i++) {
+        printf("%02x", client_public_key[i]);
+    }
+    printf("...\n");
+
     uint8_t shared_secret[32];
     
     // ECDH 계산
     if (crypto_ecdh(shared_secret, km->server_private_key, client_public_key) != 0) {
         return -1;
     }
-    
+
+    // ✅ 디버깅: Shared Secret 출력
+    printf("      Shared Secret: ");
+    for (int i = 0; i < 8; i++) {
+        printf("%02x", shared_secret[i]);
+    }
+    printf("...\n");
+
     // 세션키 생성
     crypto_derive_session_key(session_key_out, shared_secret, NULL, 0);
-    
+
+    // ✅ 디버깅: Session Key 출력
+    printf("      Session Key: ");
+    for (int i = 0; i < 8; i++) {
+        printf("%02x", session_key_out[i]);
+    }
+    printf("...\n");
+
     // 키 테이블에 추가
     add_key(km, vpn_ip, session_key_out);
     
