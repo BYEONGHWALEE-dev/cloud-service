@@ -90,7 +90,7 @@ int bring_tun_up(const char *dev) {
 
 // IP 패킷 정보 출력
 void print_ip_packet(const uint8_t *packet, ssize_t len) {
-    if (len < sizeof(struct iphdr)) {
+    if (len <(ssize_t)sizeof(struct iphdr)) {
         printf("Packet too short (%zd bytes)\n", len);
         return;
     }

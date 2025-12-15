@@ -25,7 +25,7 @@ void signal_handler(int sig) {
     }
 }
 
-// UDP에서 받은 패킷 처리
+s/ UDP에서 받은 패킷 처리
 void handle_udp_to_tun(int udp_fd, int tun_fd) {
     uint8_t buffer[2048];
     struct sockaddr_in client_addr;
@@ -42,7 +42,7 @@ void handle_udp_to_tun(int udp_fd, int tun_fd) {
     printf("   Size: %zd bytes\n", n);
     
     // 프로토콜 헤더 확인 (최소 크기 체크)
-    if (n >= sizeof(vpn_header_t)) {
+    if (n >= (ssize_t)sizeof(vpn_header_t)) {
         vpn_header_t *header = (vpn_header_t*)buffer;
         print_vpn_packet(header);
         
