@@ -14,8 +14,11 @@
 #include <time.h>
 #include <sodium.h>
 
-#define KEEPALIVE_INTERVAL 30  // 30초마다 PING
-#define PONG_TIMEOUT 60        // 60초 안에 PONG 없으면 타임아웃
+#define KEEPALIVE_INTERVAL 30
+#define PONG_TIMEOUT 60
+#define MAX_RECONNECT_ATTEMPTS 10   // 최대 재연결 시도
+#define INITIAL_BACKOFF 1           // 초기 백오프 (1초)
+#define MAX_BACKOFF 60              // 최대 백오프 (60초)
 
 typedef struct {
     int sock_fd;
@@ -31,8 +34,15 @@ typedef struct {
     uint32_t session_id;
     int connected;
     
-    time_t last_ping_sent;     // 마지막 PING 전송 시각
-    time_t last_pong_received; // 마지막 PONG 수신 시각
+    time_t last_ping_sent;
+    time_t last_pong_received;
+    
+    // 재연결 관련
+    int reconnect_attempts;
+    int backoff_seconds;
+    char server_ip[INET_ADDRSTRLEN];
+    uint16_t server_port;
+    char username[64];
 } vpn_client_t;
 
 volatile sig_atomic_t client_running = 1;
@@ -53,25 +63,14 @@ vpn_client_t* init_vpn_client(const char *server_ip, uint16_t server_port) {
     
     memset(client, 0, sizeof(vpn_client_t));
     client->tun_fd = -1;
+    client->sock_fd = -1;
+    
+    // 서버 정보 저장 (재연결용)
+    strncpy(client->server_ip, server_ip, sizeof(client->server_ip) - 1);
+    client->server_port = server_port;
+    client->backoff_seconds = INITIAL_BACKOFF;
     
     if (crypto_init() != 0) {
-        free(client);
-        return NULL;
-    }
-    
-    client->sock_fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (client->sock_fd < 0) {
-        perror("socket");
-        free(client);
-        return NULL;
-    }
-    
-    client->server_addr.sin_family = AF_INET;
-    client->server_addr.sin_port = htons(server_port);
-    
-    if (inet_pton(AF_INET, server_ip, &client->server_addr.sin_addr) <= 0) {
-        fprintf(stderr, "Invalid server IP: %s\n", server_ip);
-        close(client->sock_fd);
         free(client);
         return NULL;
     }
@@ -86,7 +85,6 @@ vpn_client_t* init_vpn_client(const char *server_ip, uint16_t server_port) {
 
 void destroy_vpn_client(vpn_client_t *client) {
     if (client) {
-        // DISCONNECT 패킷 전송
         if (client->connected && client->sock_fd >= 0) {
             uint8_t buffer[sizeof(vpn_header_t)];
             vpn_header_t *disconnect = (vpn_header_t*)buffer;
@@ -111,10 +109,40 @@ void destroy_vpn_client(vpn_client_t *client) {
     }
 }
 
+// 소켓 재생성
+int recreate_socket(vpn_client_t *client) {
+    if (client->sock_fd >= 0) {
+        close(client->sock_fd);
+    }
+    
+    client->sock_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (client->sock_fd < 0) {
+        perror("socket");
+        return -1;
+    }
+    
+    client->server_addr.sin_family = AF_INET;
+    client->server_addr.sin_port = htons(client->server_port);
+    
+    if (inet_pton(AF_INET, client->server_ip, &client->server_addr.sin_addr) <= 0) {
+        fprintf(stderr, "Invalid server IP\n");
+        close(client->sock_fd);
+        client->sock_fd = -1;
+        return -1;
+    }
+    
+    return 0;
+}
+
 int vpn_connect(vpn_client_t *client, const char *username) {
     uint8_t buffer[2048];
     
     printf("\n🔐 Connecting to VPN server...\n");
+    
+    // 소켓 재생성 (재연결 시)
+    if (recreate_socket(client) != 0) {
+        return -1;
+    }
     
     connect_request_t *req = (connect_request_t*)buffer;
     init_vpn_header(&req->header, PKT_CONNECT_REQ,
@@ -196,8 +224,9 @@ int vpn_connect(vpn_client_t *client, const char *username) {
     printf("   ✅ Session key generated\n");
     
     client->connected = 1;
+    client->reconnect_attempts = 0;  // 재연결 카운터 리셋
+    client->backoff_seconds = INITIAL_BACKOFF;  // 백오프 리셋
     
-    // Keep-alive 타이머 초기화
     client->last_pong_received = time(NULL);
     client->last_ping_sent = time(NULL);
     
@@ -205,6 +234,12 @@ int vpn_connect(vpn_client_t *client, const char *username) {
 }
 
 int setup_client_tun(vpn_client_t *client) {
+    // TUN이 이미 있으면 재사용
+    if (client->tun_fd >= 0) {
+        printf("\n━━━ Reusing TUN Interface ━━━\n");
+        return 0;
+    }
+    
     printf("\n━━━ Client TUN Interface ━━━\n");
     
     client->tun_fd = create_tun_interface("tun1");
@@ -219,11 +254,13 @@ int setup_client_tun(vpn_client_t *client) {
     
     if (configure_tun_ip("tun1", ip_str, 24) < 0) {
         close(client->tun_fd);
+        client->tun_fd = -1;
         return -1;
     }
     
     if (bring_tun_up("tun1") < 0) {
         close(client->tun_fd);
+        client->tun_fd = -1;
         return -1;
     }
     
@@ -231,7 +268,6 @@ int setup_client_tun(vpn_client_t *client) {
     return 0;
 }
 
-// PING 전송
 void send_ping(vpn_client_t *client) {
     uint8_t buffer[sizeof(vpn_header_t)];
     
@@ -248,18 +284,15 @@ void send_ping(vpn_client_t *client) {
     }
 }
 
-// Keep-alive 체크
 int check_keepalive(vpn_client_t *client) {
     time_t now = time(NULL);
     
-    // PONG 타임아웃 체크
     if (now - client->last_pong_received > PONG_TIMEOUT) {
         fprintf(stderr, "❌ No PONG received for %d seconds\n", PONG_TIMEOUT);
         fprintf(stderr, "   Connection lost!\n");
         return -1;
     }
     
-    // PING 전송 주기 체크
     if (now - client->last_ping_sent >= KEEPALIVE_INTERVAL) {
         send_ping(client);
     }
@@ -267,7 +300,47 @@ int check_keepalive(vpn_client_t *client) {
     return 0;
 }
 
-// UDP → TUN (수신)
+// 재연결 시도
+int attempt_reconnect(vpn_client_t *client) {
+    if (client->reconnect_attempts >= MAX_RECONNECT_ATTEMPTS) {
+        fprintf(stderr, "\n❌ Max reconnect attempts reached (%d)\n", MAX_RECONNECT_ATTEMPTS);
+        return -1;
+    }
+    
+    client->reconnect_attempts++;
+    
+    printf("\n🔄 Reconnecting... (attempt %d/%d)\n",
+           client->reconnect_attempts, MAX_RECONNECT_ATTEMPTS);
+    printf("   Waiting %d seconds (exponential backoff)...\n",
+           client->backoff_seconds);
+    
+    sleep(client->backoff_seconds);
+    
+    // 지수 백오프
+    client->backoff_seconds *= 2;
+    if (client->backoff_seconds > MAX_BACKOFF) {
+        client->backoff_seconds = MAX_BACKOFF;
+    }
+    
+    // 연결 상태 초기화
+    client->connected = 0;
+    
+    // 재연결 시도
+    if (vpn_connect(client, client->username) != 0) {
+        fprintf(stderr, "   ❌ Reconnection failed\n");
+        return -1;
+    }
+    
+    // TUN 설정 (이미 있으면 재사용)
+    if (setup_client_tun(client) != 0) {
+        fprintf(stderr, "   ❌ TUN setup failed\n");
+        return -1;
+    }
+    
+    printf("   ✅ Reconnected successfully!\n");
+    return 0;
+}
+
 void handle_udp_to_tun(vpn_client_t *client) {
     uint8_t buffer[2048];
     uint8_t plaintext[2048];
@@ -325,7 +398,6 @@ void handle_udp_to_tun(vpn_client_t *client) {
     }
 }
 
-// TUN → UDP (송신)
 void handle_tun_to_udp(vpn_client_t *client) {
     uint8_t buffer[2048];
     uint8_t ciphertext[2048];
@@ -379,7 +451,7 @@ int main(int argc, char *argv[]) {
     
     const char *server_ip = argv[1];
     
-    printf("🔐 VPN Client (Full Duplex + Keep-alive)\n");
+    printf("🔐 VPN Client (Keep-alive + Auto Reconnect)\n");
     printf("═══════════════════════════════════════\n\n");
     
     signal(SIGINT, client_signal_handler);
@@ -390,9 +462,12 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     
+    // 초기 연결
+    strncpy(client->username, "test_user", sizeof(client->username) - 1);
+    
     sleep(1);
     
-    if (vpn_connect(client, "test_user") != 0) {
+    if (vpn_connect(client, client->username) != 0) {
         destroy_vpn_client(client);
         return 1;
     }
@@ -409,11 +484,20 @@ int main(int argc, char *argv[]) {
     printf("🔄 Full duplex communication enabled\n");
     printf("🏓 Keep-alive: %d seconds\n", KEEPALIVE_INTERVAL);
     printf("⏱️  Timeout: %d seconds\n", PONG_TIMEOUT);
+    printf("🔄 Auto reconnect: enabled (max %d attempts)\n", MAX_RECONNECT_ATTEMPTS);
     printf("⏳ Press Ctrl+C to disconnect...\n\n");
     
-    int max_fd = (client->tun_fd > client->sock_fd) ? client->tun_fd : client->sock_fd;
-    
     while (client_running) {
+        if (!client->connected) {
+            // 재연결 시도
+            if (attempt_reconnect(client) != 0) {
+                fprintf(stderr, "💔 Reconnection failed, exiting...\n");
+                break;
+            }
+        }
+        
+        int max_fd = (client->tun_fd > client->sock_fd) ? client->tun_fd : client->sock_fd;
+        
         fd_set read_fds;
         struct timeval timeout = {1, 0};
         
@@ -432,8 +516,9 @@ int main(int argc, char *argv[]) {
         
         // Keep-alive 체크
         if (check_keepalive(client) != 0) {
-            fprintf(stderr, "💔 Connection lost, exiting...\n");
-            break;
+            fprintf(stderr, "💔 Connection lost\n");
+            client->connected = 0;  // 재연결 플래그
+            continue;
         }
         
         if (activity == 0) {
