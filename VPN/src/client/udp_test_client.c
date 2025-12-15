@@ -40,17 +40,26 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     
-    // 2. 테스트 패킷 전송
     printf("📤 Sending test packets...\n\n");
     
-    // PING 패킷
-    vpn_header_t ping_pkt;
-    init_vpn_header(&ping_pkt, PKT_PING, 0);
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 2. CONNECT_REQ 전송 (NEW!)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     
-    printf("Sending PING...\n");
-    print_vpn_packet(&ping_pkt);
+    printf("━━━ Step 1: Connection Request ━━━\n");
     
-    ssize_t sent = sendto(sock_fd, &ping_pkt, sizeof(ping_pkt), 0,
+    connect_request_t conn_req;
+    init_vpn_header(&conn_req.header, PKT_CONNECT_REQ, 
+                    sizeof(conn_req) - sizeof(vpn_header_t));
+    
+    strncpy(conn_req.username, "test_user", sizeof(conn_req.username) - 1);
+    memset(conn_req.auth_token, 0xAB, sizeof(conn_req.auth_token)); // 가짜 토큰
+    
+    printf("Sending CONNECT_REQ...\n");
+    print_vpn_packet(&conn_req.header);
+    printf("  Username: %s\n", conn_req.username);
+    
+    ssize_t sent = sendto(sock_fd, &conn_req, sizeof(conn_req), 0,
                           (struct sockaddr*)&server_addr, sizeof(server_addr));
     
     if (sent < 0) {
@@ -61,7 +70,71 @@ int main(int argc, char *argv[]) {
     
     printf("✅ Sent %zd bytes\n\n", sent);
     
-    // 3. 간단한 IP 패킷 전송 (DATA)
+    // 응답 대기
+    printf("⏳ Waiting for CONNECT_RESP...\n");
+    
+    uint8_t recv_buffer[2048];
+    struct sockaddr_in recv_addr;
+    socklen_t recv_len = sizeof(recv_addr);
+    
+    struct timeval tv = {5, 0};  // 5초 타임아웃
+    setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    
+    ssize_t n = recvfrom(sock_fd, recv_buffer, sizeof(recv_buffer), 0,
+                         (struct sockaddr*)&recv_addr, &recv_len);
+    
+    if (n > 0) {
+        connect_response_t *resp = (connect_response_t*)recv_buffer;
+        
+        printf("📥 CONNECT_RESP received:\n");
+        print_vpn_packet(&resp->header);
+        
+        if (resp->status == 0) {
+            struct in_addr vpn_ip;
+            vpn_ip.s_addr = resp->vpn_ip;
+            
+            printf("✅ Connection SUCCESS!\n");
+            printf("  VPN IP:     %s\n", inet_ntoa(vpn_ip));
+            printf("  Session ID: %u\n", ntohl(resp->session_id));
+        } else {
+            printf("❌ Connection FAILED!\n");
+            printf("  Status: %u\n", resp->status);
+        }
+    } else {
+        printf("⚠️  No response (timeout or error)\n");
+    }
+    
+    printf("\n");
+    
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 3. PING 패킷 (기존)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    
+    printf("━━━ Step 2: PING Test ━━━\n");
+    
+    vpn_header_t ping_pkt;
+    init_vpn_header(&ping_pkt, PKT_PING, 0);
+    
+    printf("Sending PING...\n");
+    print_vpn_packet(&ping_pkt);
+    
+    sent = sendto(sock_fd, &ping_pkt, sizeof(ping_pkt), 0,
+                  (struct sockaddr*)&server_addr, sizeof(server_addr));
+    
+    if (sent < 0) {
+        perror("sendto");
+        close(sock_fd);
+        return 1;
+    }
+    
+    printf("✅ Sent %zd bytes\n\n", sent);
+    
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 4. DATA 패킷 (기존)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    
+    printf("━━━ Step 3: DATA Test ━━━\n");
+    
     uint8_t packet_buffer[2048];
     data_packet_t *data_pkt = (data_packet_t*)packet_buffer;
     
@@ -72,7 +145,6 @@ int main(int argc, char *argv[]) {
         0x40, 0x01, 0x00, 0x00,
         0x0a, 0x08, 0x00, 0x05,  // Src: 10.8.0.5
         0xc0, 0xa8, 0x64, 0x0a,  // Dst: 192.168.100.10
-        // ICMP data...
     };
     
     init_vpn_header(&data_pkt->header, PKT_DATA, sizeof(fake_icmp));
@@ -95,7 +167,7 @@ int main(int argc, char *argv[]) {
     printf("✅ Sent %zd bytes\n\n", sent);
     
     printf("═══════════════════════════════════\n");
-    printf("✅ Test complete! Check server logs.\n");
+    printf("✅ All tests complete! Check server logs.\n");
     
     close(sock_fd);
     return 0;
