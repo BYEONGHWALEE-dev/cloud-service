@@ -49,6 +49,7 @@ $(BUILD_DIR)/vpn_enclave: $(SRC_DIR)/enclave/enclave_main.c \
 
 # VPN 클라이언트 (암호화 지원)
 $(BUILD_DIR)/vpn_client: $(SRC_DIR)/client/vpn_client.c \
+                          $(SRC_DIR)/server/tun_manager.c \
                           $(SRC_DIR)/enclave/crypto.c \
                           $(SRC_DIR)/common/protocol.c
 	@mkdir -p $(BUILD_DIR)
