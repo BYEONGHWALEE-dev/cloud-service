@@ -3,6 +3,7 @@
 #include "tun_manager.h"
 #include "udp_server.h"
 #include "protocol.h"
+#include "client_manager.h"  // ← 추가!
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,7 +27,7 @@ void signal_handler(int sig) {
 }
 
 // UDP에서 받은 패킷 처리
-void handle_udp_to_tun(int udp_fd, int tun_fd) {
+void handle_udp_to_tun(int udp_fd, int tun_fd, client_table_t *table) {
     uint8_t buffer[2048];
     struct sockaddr_in client_addr;
     
@@ -41,13 +42,53 @@ void handle_udp_to_tun(int udp_fd, int tun_fd) {
            ntohs(client_addr.sin_port));
     printf("   Size: %zd bytes\n", n);
     
-    // 프로토콜 헤더 확인 (최소 크기 체크)
-    if (n >= (ssize_t)sizeof(vpn_header_t)) {
-        vpn_header_t *header = (vpn_header_t*)buffer;
-        print_vpn_packet(header);
+    // 프로토콜 헤더 확인
+    if (n < (ssize_t)sizeof(vpn_header_t)) {
+        printf("   ⚠️  Packet too short\n");
+        return;
+    }
+    
+    vpn_header_t *header = (vpn_header_t*)buffer;
+    print_vpn_packet(header);
+    
+    // 패킷 타입별 처리
+    switch (header->type) {
+        case PKT_CONNECT_REQ: {
+            printf("   → Processing CONNECT_REQ\n");
+            
+            // VPN IP 할당
+            uint32_t vpn_ip = add_client(table, &client_addr);
+            
+            if (vpn_ip == 0) {
+                printf("   ❌ Failed to add client\n");
+                return;
+            }
+            
+            // 응답 패킷 생성
+            connect_response_t resp;
+            init_vpn_header(&resp.header, PKT_CONNECT_RESP, 
+                           sizeof(resp) - sizeof(vpn_header_t));
+            resp.status = 0;  // 성공
+            resp.vpn_ip = vpn_ip;
+            
+            client_entry_t *client = find_client_by_addr(table, &client_addr);
+            resp.session_id = htonl(client->session_id);
+            
+            // 응답 전송
+            udp_send(udp_fd, (uint8_t*)&resp, sizeof(resp), &client_addr);
+            
+            printf("   → CONNECT_RESP sent\n");
+            print_client_table(table);
+            break;
+        }
         
-        // 데이터 패킷이면 TUN으로 전달
-        if (header->type == PKT_DATA) {
+        case PKT_DATA: {
+            // 클라이언트 찾기 및 활동 갱신
+            client_entry_t *client = find_client_by_addr(table, &client_addr);
+            if (client) {
+                update_client_activity(client);
+            }
+            
             // 헤더 이후 데이터를 TUN에 쓰기
             uint8_t *ip_packet = buffer + sizeof(vpn_header_t);
             size_t ip_packet_len = n - sizeof(vpn_header_t);
@@ -59,12 +100,42 @@ void handle_udp_to_tun(int udp_fd, int tun_fd) {
                     print_ip_packet(ip_packet, written);
                 }
             }
+            break;
         }
+        
+        case PKT_PING: {
+            printf("   → PING received, sending PONG\n");
+            
+            // 클라이언트 활동 갱신
+            client_entry_t *client = find_client_by_addr(table, &client_addr);
+            if (client) {
+                update_client_activity(client);
+            }
+            
+            // PONG 응답
+            vpn_header_t pong;
+            init_vpn_header(&pong, PKT_PONG, 0);
+            udp_send(udp_fd, (uint8_t*)&pong, sizeof(pong), &client_addr);
+            break;
+        }
+        
+        case PKT_DISCONNECT: {
+            printf("   → DISCONNECT received\n");
+            client_entry_t *client = find_client_by_addr(table, &client_addr);
+            if (client) {
+                remove_client(table, client->vpn_ip);
+                print_client_table(table);
+            }
+            break;
+        }
+        
+        default:
+            printf("   ⚠️  Unknown packet type: 0x%02x\n", header->type);
     }
 }
 
-// TUN에서 받은 패킷 처리
-void handle_tun_to_udp(int tun_fd, int udp_fd) {
+// TUN에서 받은 패킷 처리 (수정 - TODO 제거!)
+void handle_tun_to_udp(int tun_fd, int udp_fd, client_table_t *table) {
     uint8_t buffer[2048];
     uint8_t packet_buffer[2048];
     
@@ -80,6 +151,38 @@ void handle_tun_to_udp(int tun_fd, int udp_fd) {
     printf("   Size: %zd bytes\n", n);
     print_ip_packet(buffer, n);
     
+    // IP 헤더에서 목적지 확인
+    if (n < 20) {  // 최소 IP 헤더 크기
+        printf("   ⚠️  Packet too short for IP\n");
+        return;
+    }
+    
+    struct iphdr {
+        uint8_t  ihl:4, version:4;
+        uint8_t  tos;
+        uint16_t tot_len;
+        uint16_t id;
+        uint16_t frag_off;
+        uint8_t  ttl;
+        uint8_t  protocol;
+        uint16_t check;
+        uint32_t saddr;
+        uint32_t daddr;
+    } __attribute__((packed));
+    
+    struct iphdr *ip = (struct iphdr*)buffer;
+    uint32_t dst_ip = ip->daddr;
+    
+    // 목적지 클라이언트 찾기
+    client_entry_t *client = find_client_by_vpn_ip(table, dst_ip);
+    
+    if (!client) {
+        struct in_addr dst_addr;
+        dst_addr.s_addr = dst_ip;
+        printf("   ⚠️  No client found for VPN IP: %s\n", inet_ntoa(dst_addr));
+        return;
+    }
+    
     // VPN 헤더 추가
     data_packet_t *pkt = (data_packet_t*)packet_buffer;
     init_vpn_header(&pkt->header, PKT_DATA, n);
@@ -87,18 +190,24 @@ void handle_tun_to_udp(int tun_fd, int udp_fd) {
     
     size_t total_len = sizeof(vpn_header_t) + n;
     
-    // TODO: 실제로는 목적지 클라이언트를 찾아야 함
-    // 지금은 테스트용으로 마지막 클라이언트에게 전송
-    // (나중에 클라이언트 테이블 구현 필요)
+    // UDP로 전송
+    ssize_t sent = udp_send(udp_fd, packet_buffer, total_len, &client->real_addr);
     
-    printf("   → UDP: Ready to send %zu bytes\n", total_len);
-    printf("   (클라이언트 테이블 구현 후 전송 가능)\n");
+    if (sent > 0) {
+        printf("   → UDP: Sent %zd bytes to %s:%d\n",
+               sent,
+               inet_ntoa(client->real_addr.sin_addr),
+               ntohs(client->real_addr.sin_port));
+        
+        update_client_activity(client);
+    }
 }
 
 int main() {
     int tun_fd, udp_fd;
     fd_set read_fds;
     int max_fd;
+    client_table_t *client_table;  // ← 추가!
     
     printf("🚀 VPN Server Starting...\n");
     printf("═══════════════════════════════════════\n\n");
@@ -106,6 +215,9 @@ int main() {
     // 시그널 핸들러
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+    
+    // 랜덤 시드 초기화
+    srand(time(NULL));
     
     // 1. TUN 인터페이스 생성
     printf("━━━ TUN Interface ━━━\n");
@@ -134,7 +246,17 @@ int main() {
     }
     printf("\n");
     
-    // 3. 파일 디스크립터 정보
+    // 3. 클라이언트 테이블 초기화
+    printf("━━━ Client Table ━━━\n");
+    client_table = init_client_table();
+    if (!client_table) {
+        close(udp_fd);
+        close(tun_fd);
+        return 1;
+    }
+    printf("\n");
+    
+    // 4. 파일 디스크립터 정보
     printf("━━━ File Descriptors ━━━\n");
     printf("  TUN Interface: fd=%d\n", tun_fd);
     printf("  UDP Socket:    fd=%d\n", udp_fd);
@@ -148,8 +270,10 @@ int main() {
     printf("═══════════════════════════════════════\n");
     printf("⏳ Waiting for packets... (Ctrl+C to stop)\n\n");
     
-    // 4. 이벤트 루프
+    // 5. 이벤트 루프
     max_fd = (tun_fd > udp_fd) ? tun_fd : udp_fd;
+    
+    time_t last_timeout_check = time(NULL);
     
     while (running) {
         FD_ZERO(&read_fds);
@@ -168,23 +292,29 @@ int main() {
         }
         
         if (activity == 0) {
-            // 타임아웃 (아무 일도 없음)
+            // 타임아웃: 클라이언트 타임아웃 체크 (30초마다)
+            time_t now = time(NULL);
+            if (now - last_timeout_check >= 30) {
+                check_client_timeouts(client_table);
+                last_timeout_check = now;
+            }
             continue;
         }
         
         // UDP 소켓에서 패킷 수신
         if (FD_ISSET(udp_fd, &read_fds)) {
-            handle_udp_to_tun(udp_fd, tun_fd);
+            handle_udp_to_tun(udp_fd, tun_fd, client_table);
         }
         
         // TUN 인터페이스에서 패킷 수신
         if (FD_ISSET(tun_fd, &read_fds)) {
-            handle_tun_to_udp(tun_fd, udp_fd);
+            handle_tun_to_udp(tun_fd, udp_fd, client_table);
         }
     }
     
-    // 5. 정리
+    // 6. 정리
     printf("\n🧹 Cleaning up...\n");
+    destroy_client_table(client_table);
     close(udp_fd);
     close(tun_fd);
     
