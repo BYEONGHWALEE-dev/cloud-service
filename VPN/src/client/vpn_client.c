@@ -2,16 +2,20 @@
 
 #include "protocol.h"
 #include "crypto.h"
+#include "tun_manager.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/select.h>
+#include <signal.h>
 #include <sodium.h>
 
 typedef struct {
     int sock_fd;
+    int tun_fd;
     struct sockaddr_in server_addr;
     
     uint8_t client_private_key[32];
@@ -24,6 +28,15 @@ typedef struct {
     int connected;
 } vpn_client_t;
 
+volatile sig_atomic_t client_running = 1;
+
+void client_signal_handler(int sig) {
+    if (sig == SIGINT || sig == SIGTERM) {
+        printf("\n🛑 Client shutting down...\n");
+        client_running = 0;
+    }
+}
+
 vpn_client_t* init_vpn_client(const char *server_ip, uint16_t server_port) {
     vpn_client_t *client = (vpn_client_t*)malloc(sizeof(vpn_client_t));
     if (!client) {
@@ -32,6 +45,7 @@ vpn_client_t* init_vpn_client(const char *server_ip, uint16_t server_port) {
     }
     
     memset(client, 0, sizeof(vpn_client_t));
+    client->tun_fd = -1;
     
     if (crypto_init() != 0) {
         free(client);
@@ -59,11 +73,6 @@ vpn_client_t* init_vpn_client(const char *server_ip, uint16_t server_port) {
     
     printf("✅ VPN Client initialized\n");
     printf("   Server: %s:%u\n", server_ip, server_port);
-    printf("   Client public key: ");
-    for (int i = 0; i < 8; i++) {
-        printf("%02x", client->client_public_key[i]);
-    }
-    printf("...\n");
     
     return client;
 }
@@ -72,6 +81,9 @@ void destroy_vpn_client(vpn_client_t *client) {
     if (client) {
         if (client->sock_fd >= 0) {
             close(client->sock_fd);
+        }
+        if (client->tun_fd >= 0) {
+            close(client->tun_fd);
         }
         sodium_memzero(client, sizeof(vpn_client_t));
         free(client);
@@ -83,12 +95,6 @@ int vpn_connect(vpn_client_t *client, const char *username) {
     uint8_t buffer[2048];
     
     printf("\n🔐 Connecting to VPN server...\n");
-
-    printf("   📤 Sending client public key: ");
-    for (int i = 0; i < 8; i++) {
-	    printf("%02x", client->client_public_key[i]);
-    }
-    printf("...\n");
     
     connect_request_t *req = (connect_request_t*)buffer;
     init_vpn_header(&req->header, PKT_CONNECT_REQ,
@@ -98,7 +104,6 @@ int vpn_connect(vpn_client_t *client, const char *username) {
     memcpy(req->auth_token, client->client_public_key, 32);
     
     printf("   Sending CONNECT_REQ...\n");
-    printf("   Username: %s\n", req->username);
     
     ssize_t sent = sendto(client->sock_fd, buffer, sizeof(connect_request_t), 0,
                           (struct sockaddr*)&client->server_addr,
@@ -140,13 +145,7 @@ int vpn_connect(vpn_client_t *client, const char *username) {
     client->vpn_ip = resp->vpn_ip;
     client->session_id = ntohl(resp->session_id);
     memcpy(client->server_public_key, resp->server_public_key, 32);
-   
-    printf("   📩 Received server public key: ");
-    for (int i = 0; i < 8; i++) {
-	    printf("%02x", client->server_public_key[i]);
-    }
-    printf("...\n");
-
+    
     struct in_addr vpn_addr;
     vpn_addr.s_addr = client->vpn_ip;
     
@@ -157,106 +156,165 @@ int vpn_connect(vpn_client_t *client, const char *username) {
     printf("   🔑 Generating session key (ECDH)...\n");
     
     uint8_t shared_secret[32];
+    
     if (crypto_ecdh(shared_secret, client->client_private_key,
                    client->server_public_key) != 0) {
         fprintf(stderr, "   ❌ ECDH failed\n");
         return -1;
     }
-
-    printf("   🔑 Shared Secret: ");
-    for (int i = 0; i < 8; i++) {
-	    printf("%02x", shared_secret[i]);
-	}
-    printf("...\n");
-
+    
     crypto_kdf_derive_from_key(
         client->session_key,
-        32,                 // key length
-        1,                  // subkey ID (서버와 동일!)
-        "VPN_SESS",         // context (서버와 동일!)
+        32,
+        1,
+        "VPN_SESS",
         shared_secret
     );
     
     sodium_memzero(shared_secret, 32);
     
     printf("   ✅ Session key generated\n");
-
-    printf("   🔑 Session key (client): ");
-    for (int i = 0; i < 8; i++) {
-	    printf("%02x", client->session_key[i]);
-    }
-    printf("...\n");
     
     client->connected = 1;
     
     return 0;
 }
 
-int vpn_ping(vpn_client_t *client) {
-    uint8_t buffer[sizeof(vpn_header_t)];
+int setup_client_tun(vpn_client_t *client) {
+    printf("\n━━━ Client TUN Interface ━━━\n");
     
-    vpn_header_t *ping = (vpn_header_t*)buffer;
-    init_vpn_header(ping, PKT_PING, 0);
-    
-    ssize_t sent = sendto(client->sock_fd, buffer, sizeof(vpn_header_t), 0,
-                          (struct sockaddr*)&client->server_addr,
-                          sizeof(client->server_addr));
-    
-    if (sent < 0) {
-        perror("sendto");
+    // TUN 생성
+    client->tun_fd = create_tun_interface("tun1");
+    if (client->tun_fd < 0) {
         return -1;
     }
     
-    printf("🏓 PING sent\n");
+    // VPN IP 설정
+    struct in_addr vpn_addr;
+    vpn_addr.s_addr = client->vpn_ip;
+    char ip_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &vpn_addr, ip_str, sizeof(ip_str));
     
+    if (configure_tun_ip("tun1", ip_str, 24) < 0) {
+        close(client->tun_fd);
+        return -1;
+    }
+    
+    if (bring_tun_up("tun1") < 0) {
+        close(client->tun_fd);
+        return -1;
+    }
+    
+    printf("\n");
     return 0;
 }
 
-int vpn_send_data(vpn_client_t *client, const uint8_t *data, size_t data_len) {
+// UDP → TUN (수신)
+void handle_udp_to_tun(vpn_client_t *client) {
     uint8_t buffer[2048];
-    uint8_t ciphertext[2048];
+    uint8_t plaintext[2048];
+    struct sockaddr_in recv_addr;
+    socklen_t recv_len = sizeof(recv_addr);
     
-    if (!client->connected) {
-        fprintf(stderr, "❌ Not connected\n");
-        return -1;
+    ssize_t n = recvfrom(client->sock_fd, buffer, sizeof(buffer), 0,
+                         (struct sockaddr*)&recv_addr, &recv_len);
+    
+    if (n < 0) return;
+    
+    if (n < (ssize_t)sizeof(vpn_header_t)) {
+        return;
     }
     
-    printf("\n📤 Sending encrypted data...\n");
-    printf("   Plaintext: %zu bytes\n", data_len);
+    vpn_header_t *header = (vpn_header_t*)buffer;
+    
+    switch (header->type) {
+        case PKT_PONG: {
+            printf("🏓 PONG received\n");
+            break;
+        }
+        
+        case PKT_DATA: {
+            printf("\n📥 Encrypted packet received (%zd bytes)\n", n);
+            
+            uint8_t *ciphertext = buffer + sizeof(vpn_header_t);
+            size_t ciphertext_len = n - sizeof(vpn_header_t);
+            
+            printf("   🔓 Decrypting %zu bytes...\n", ciphertext_len);
+            
+            // nonce 추출
+            uint8_t *nonce = ciphertext;
+            uint8_t *encrypted = ciphertext + CRYPTO_NONCE_SIZE;
+            size_t encrypted_len = ciphertext_len - CRYPTO_NONCE_SIZE;
+            
+            if (crypto_decrypt(encrypted, encrypted_len, plaintext,
+                             client->session_key, nonce) != 0) {
+                printf("   ❌ Decryption failed\n");
+                return;
+            }
+            
+            size_t plaintext_len = encrypted_len - CRYPTO_MAC_SIZE;
+            printf("   ✅ Decrypted to %zu bytes\n", plaintext_len);
+            
+            // TUN에 쓰기
+            ssize_t written = write(client->tun_fd, plaintext, plaintext_len);
+            if (written > 0) {
+                printf("   → TUN: Written %zd bytes\n", written);
+            }
+            break;
+        }
+        
+        default:
+            break;
+    }
+}
+
+// TUN → UDP (송신)
+void handle_tun_to_udp(vpn_client_t *client) {
+    uint8_t buffer[2048];
+    uint8_t ciphertext[2048];
+    uint8_t packet_buffer[2048];
+    
+    ssize_t n = read(client->tun_fd, buffer, sizeof(buffer));
+    
+    if (n < 0) {
+        perror("TUN read");
+        return;
+    }
+    
+    printf("\n📤 TUN packet captured (%zd bytes)\n", n);
+    
+    // 암호화
+    printf("   🔒 Encrypting...\n");
     
     uint8_t nonce[CRYPTO_NONCE_SIZE];
     crypto_random_nonce(nonce);
     
-    if (crypto_encrypt(data, data_len,
-                      ciphertext + CRYPTO_NONCE_SIZE,
+    if (crypto_encrypt(buffer, n, ciphertext + CRYPTO_NONCE_SIZE,
                       client->session_key, nonce) != 0) {
-        fprintf(stderr, "   ❌ Encryption failed\n");
-        return -1;
+        printf("   ❌ Encryption failed\n");
+        return;
     }
     
     memcpy(ciphertext, nonce, CRYPTO_NONCE_SIZE);
-    size_t ciphertext_len = CRYPTO_NONCE_SIZE + data_len + CRYPTO_MAC_SIZE;
+    size_t ciphertext_len = CRYPTO_NONCE_SIZE + n + CRYPTO_MAC_SIZE;
     
-    printf("   Ciphertext: %zu bytes\n", ciphertext_len);
+    printf("   ✅ Encrypted to %zu bytes\n", ciphertext_len);
     
-    data_packet_t *pkt = (data_packet_t*)buffer;
+    // VPN 헤더 추가
+    data_packet_t *pkt = (data_packet_t*)packet_buffer;
     init_vpn_header(&pkt->header, PKT_DATA, ciphertext_len);
     memcpy(pkt->data, ciphertext, ciphertext_len);
     
     size_t total_len = sizeof(vpn_header_t) + ciphertext_len;
     
-    ssize_t sent = sendto(client->sock_fd, buffer, total_len, 0,
+    // UDP 전송
+    ssize_t sent = sendto(client->sock_fd, packet_buffer, total_len, 0,
                           (struct sockaddr*)&client->server_addr,
                           sizeof(client->server_addr));
     
-    if (sent < 0) {
-        perror("sendto");
-        return -1;
+    if (sent > 0) {
+        printf("   → UDP: Sent %zd bytes to server\n", sent);
     }
-    
-    printf("   ✅ Sent %zd bytes (encrypted)\n", sent);
-    
-    return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -267,8 +325,11 @@ int main(int argc, char *argv[]) {
     
     const char *server_ip = argv[1];
     
-    printf("🔐 VPN Client (with Encryption)\n");
+    printf("🔐 VPN Client (Full Duplex)\n");
     printf("═══════════════════════════════════════\n\n");
+    
+    signal(SIGINT, client_signal_handler);
+    signal(SIGTERM, client_signal_handler);
     
     vpn_client_t *client = init_vpn_client(server_ip, 51820);
     if (!client) {
@@ -284,29 +345,56 @@ int main(int argc, char *argv[]) {
     
     sleep(1);
     
-    printf("\n━━━ PING Test ━━━\n");
-    vpn_ping(client);
+    if (setup_client_tun(client) != 0) {
+        destroy_vpn_client(client);
+        return 1;
+    }
     
-    sleep(1);
+    printf("✅ VPN Client is running!\n");
+    printf("═══════════════════════════════════════\n");
+    printf("🔄 Full duplex communication enabled\n");
+    printf("📡 TUN: tun1 (%s)\n", inet_ntoa((struct in_addr){.s_addr = client->vpn_ip}));
+    printf("⏳ Press Ctrl+C to disconnect...\n\n");
     
-    printf("\n━━━ Encrypted DATA Test ━━━\n");
+    // 이벤트 루프
+    int max_fd = (client->tun_fd > client->sock_fd) ? client->tun_fd : client->sock_fd;
     
-    uint8_t fake_ip_packet[] = {
-        0x45, 0x00, 0x00, 0x54,
-        0x12, 0x34, 0x40, 0x00,
-        0x40, 0x01, 0x00, 0x00,
-        0x0a, 0x08, 0x00, 0x02,
-        0xc0, 0xa8, 0x64, 0x0a,
-    };
+    while (client_running) {
+        fd_set read_fds;
+        struct timeval timeout = {1, 0};
+        
+        FD_ZERO(&read_fds);
+        FD_SET(client->tun_fd, &read_fds);
+        FD_SET(client->sock_fd, &read_fds);
+        
+        int activity = select(max_fd + 1, &read_fds, NULL, NULL, &timeout);
+        
+        if (activity < 0) {
+            if (client_running) {
+                perror("select");
+            }
+            break;
+        }
+        
+        if (activity == 0) {
+            continue;
+        }
+        
+        // UDP에서 수신
+        if (FD_ISSET(client->sock_fd, &read_fds)) {
+            handle_udp_to_tun(client);
+        }
+        
+        // TUN에서 수신
+        if (FD_ISSET(client->tun_fd, &read_fds)) {
+            handle_tun_to_udp(client);
+        }
+    }
     
-    vpn_send_data(client, fake_ip_packet, sizeof(fake_ip_packet));
-    
-    sleep(1);
-    
-    printf("\n═══════════════════════════════════════\n");
-    printf("✅ All tests complete!\n");
-    
+    printf("\n🧹 Cleaning up...\n");
     destroy_vpn_client(client);
+    
+    printf("✅ VPN Client stopped.\n");
     
     return 0;
 }
