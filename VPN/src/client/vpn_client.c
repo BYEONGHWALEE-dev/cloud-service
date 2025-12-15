@@ -11,7 +11,11 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <signal.h>
+#include <time.h>
 #include <sodium.h>
+
+#define KEEPALIVE_INTERVAL 30  // 30초마다 PING
+#define PONG_TIMEOUT 60        // 60초 안에 PONG 없으면 타임아웃
 
 typedef struct {
     int sock_fd;
@@ -26,6 +30,9 @@ typedef struct {
     uint32_t vpn_ip;
     uint32_t session_id;
     int connected;
+    
+    time_t last_ping_sent;     // 마지막 PING 전송 시각
+    time_t last_pong_received; // 마지막 PONG 수신 시각
 } vpn_client_t;
 
 volatile sig_atomic_t client_running = 1;
@@ -79,6 +86,19 @@ vpn_client_t* init_vpn_client(const char *server_ip, uint16_t server_port) {
 
 void destroy_vpn_client(vpn_client_t *client) {
     if (client) {
+        // DISCONNECT 패킷 전송
+        if (client->connected && client->sock_fd >= 0) {
+            uint8_t buffer[sizeof(vpn_header_t)];
+            vpn_header_t *disconnect = (vpn_header_t*)buffer;
+            init_vpn_header(disconnect, PKT_DISCONNECT, 0);
+            
+            sendto(client->sock_fd, buffer, sizeof(vpn_header_t), 0,
+                   (struct sockaddr*)&client->server_addr,
+                   sizeof(client->server_addr));
+            
+            printf("📤 DISCONNECT sent\n");
+        }
+        
         if (client->sock_fd >= 0) {
             close(client->sock_fd);
         }
@@ -177,19 +197,21 @@ int vpn_connect(vpn_client_t *client, const char *username) {
     
     client->connected = 1;
     
+    // Keep-alive 타이머 초기화
+    client->last_pong_received = time(NULL);
+    client->last_ping_sent = time(NULL);
+    
     return 0;
 }
 
 int setup_client_tun(vpn_client_t *client) {
     printf("\n━━━ Client TUN Interface ━━━\n");
     
-    // TUN 생성
     client->tun_fd = create_tun_interface("tun1");
     if (client->tun_fd < 0) {
         return -1;
     }
     
-    // VPN IP 설정
     struct in_addr vpn_addr;
     vpn_addr.s_addr = client->vpn_ip;
     char ip_str[INET_ADDRSTRLEN];
@@ -206,6 +228,42 @@ int setup_client_tun(vpn_client_t *client) {
     }
     
     printf("\n");
+    return 0;
+}
+
+// PING 전송
+void send_ping(vpn_client_t *client) {
+    uint8_t buffer[sizeof(vpn_header_t)];
+    
+    vpn_header_t *ping = (vpn_header_t*)buffer;
+    init_vpn_header(ping, PKT_PING, 0);
+    
+    ssize_t sent = sendto(client->sock_fd, buffer, sizeof(vpn_header_t), 0,
+                          (struct sockaddr*)&client->server_addr,
+                          sizeof(client->server_addr));
+    
+    if (sent > 0) {
+        client->last_ping_sent = time(NULL);
+        printf("🏓 PING sent (keepalive)\n");
+    }
+}
+
+// Keep-alive 체크
+int check_keepalive(vpn_client_t *client) {
+    time_t now = time(NULL);
+    
+    // PONG 타임아웃 체크
+    if (now - client->last_pong_received > PONG_TIMEOUT) {
+        fprintf(stderr, "❌ No PONG received for %d seconds\n", PONG_TIMEOUT);
+        fprintf(stderr, "   Connection lost!\n");
+        return -1;
+    }
+    
+    // PING 전송 주기 체크
+    if (now - client->last_ping_sent >= KEEPALIVE_INTERVAL) {
+        send_ping(client);
+    }
+    
     return 0;
 }
 
@@ -229,6 +287,7 @@ void handle_udp_to_tun(vpn_client_t *client) {
     
     switch (header->type) {
         case PKT_PONG: {
+            client->last_pong_received = time(NULL);
             printf("🏓 PONG received\n");
             break;
         }
@@ -241,7 +300,6 @@ void handle_udp_to_tun(vpn_client_t *client) {
             
             printf("   🔓 Decrypting %zu bytes...\n", ciphertext_len);
             
-            // nonce 추출
             uint8_t *nonce = ciphertext;
             uint8_t *encrypted = ciphertext + CRYPTO_NONCE_SIZE;
             size_t encrypted_len = ciphertext_len - CRYPTO_NONCE_SIZE;
@@ -255,7 +313,6 @@ void handle_udp_to_tun(vpn_client_t *client) {
             size_t plaintext_len = encrypted_len - CRYPTO_MAC_SIZE;
             printf("   ✅ Decrypted to %zu bytes\n", plaintext_len);
             
-            // TUN에 쓰기
             ssize_t written = write(client->tun_fd, plaintext, plaintext_len);
             if (written > 0) {
                 printf("   → TUN: Written %zd bytes\n", written);
@@ -283,7 +340,6 @@ void handle_tun_to_udp(vpn_client_t *client) {
     
     printf("\n📤 TUN packet captured (%zd bytes)\n", n);
     
-    // 암호화
     printf("   🔒 Encrypting...\n");
     
     uint8_t nonce[CRYPTO_NONCE_SIZE];
@@ -300,14 +356,12 @@ void handle_tun_to_udp(vpn_client_t *client) {
     
     printf("   ✅ Encrypted to %zu bytes\n", ciphertext_len);
     
-    // VPN 헤더 추가
     data_packet_t *pkt = (data_packet_t*)packet_buffer;
     init_vpn_header(&pkt->header, PKT_DATA, ciphertext_len);
     memcpy(pkt->data, ciphertext, ciphertext_len);
     
     size_t total_len = sizeof(vpn_header_t) + ciphertext_len;
     
-    // UDP 전송
     ssize_t sent = sendto(client->sock_fd, packet_buffer, total_len, 0,
                           (struct sockaddr*)&client->server_addr,
                           sizeof(client->server_addr));
@@ -325,7 +379,7 @@ int main(int argc, char *argv[]) {
     
     const char *server_ip = argv[1];
     
-    printf("🔐 VPN Client (Full Duplex)\n");
+    printf("🔐 VPN Client (Full Duplex + Keep-alive)\n");
     printf("═══════════════════════════════════════\n\n");
     
     signal(SIGINT, client_signal_handler);
@@ -353,10 +407,10 @@ int main(int argc, char *argv[]) {
     printf("✅ VPN Client is running!\n");
     printf("═══════════════════════════════════════\n");
     printf("🔄 Full duplex communication enabled\n");
-    printf("📡 TUN: tun1 (%s)\n", inet_ntoa((struct in_addr){.s_addr = client->vpn_ip}));
+    printf("🏓 Keep-alive: %d seconds\n", KEEPALIVE_INTERVAL);
+    printf("⏱️  Timeout: %d seconds\n", PONG_TIMEOUT);
     printf("⏳ Press Ctrl+C to disconnect...\n\n");
     
-    // 이벤트 루프
     int max_fd = (client->tun_fd > client->sock_fd) ? client->tun_fd : client->sock_fd;
     
     while (client_running) {
@@ -376,16 +430,20 @@ int main(int argc, char *argv[]) {
             break;
         }
         
+        // Keep-alive 체크
+        if (check_keepalive(client) != 0) {
+            fprintf(stderr, "💔 Connection lost, exiting...\n");
+            break;
+        }
+        
         if (activity == 0) {
             continue;
         }
         
-        // UDP에서 수신
         if (FD_ISSET(client->sock_fd, &read_fds)) {
             handle_udp_to_tun(client);
         }
         
-        // TUN에서 수신
         if (FD_ISSET(client->tun_fd, &read_fds)) {
             handle_tun_to_udp(client);
         }
