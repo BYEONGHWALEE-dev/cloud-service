@@ -1,3 +1,41 @@
 spring:
   application:
     name: cloudservice
+
+  datasource:
+    url: jdbc:mysql://localhost:3306/mydatabase?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul
+    username: myuser
+    password: secret
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.MySQLDialect
+
+  security:
+    user:
+      name: admin
+      password: admin
+
+# Proxmox 설정
+proxmox:
+  host: https://192.168.0.100:8006  # Proxmox 호스트 IP로 변경하세요
+  node: pve                          # 노드 이름
+  username: root@pam                 # Proxmox 사용자명
+  password: your-password            # Proxmox 비밀번호
+  template-vmid: 9000                # 템플릿 VM ID
+
+# VM 설정
+vm:
+  ip-range:
+    start: 10                        # 192.168.100.10 부터
+    end: 99                          # 192.168.100.99 까지
+  network:
+    gateway: 192.168.100.1
+    subnet: 192.168.100.0/24
+    bridge: vmbr1

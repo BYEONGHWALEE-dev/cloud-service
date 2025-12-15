@@ -25,11 +25,18 @@ public class VMachine extends BaseEntity {
     private Member member;
 
     @Column(name = "proxmox_vm_id", nullable = false)
-    private String proxmoxVmId;
+    private Integer proxmoxVmId;  // String → Integer로 변경 (Proxmox VM ID는 숫자)
 
+    @Column(name = "vm_name", nullable = false)
+    private String vmName;  // 추가: VM 표시 이름
+
+    @Column(name = "internal_ip")
+    private String internalIp;  // 추가: 192.168.100.x
+
+    @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false)
     @Builder.Default
-    private Boolean status = false;
+    private VmStatus status = VmStatus.CREATING;  // 추가: Enum으로 변경
 
     @OneToOne(mappedBy = "vMachine", cascade = CascadeType.ALL, orphanRemoval = true)
     private SSHCredential sshCredential;
@@ -43,7 +50,11 @@ public class VMachine extends BaseEntity {
         member.getVMachines().add(this);
     }
 
-    public void updateStatus(Boolean status) {
+    public void updateStatus(VmStatus status) {
         this.status = status;
+    }
+
+    public void assignInternalIp(String internalIp) {
+        this.internalIp = internalIp;
     }
 }
