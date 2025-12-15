@@ -1,36 +1,4 @@
-ger(key_manager_t *km) {
-	    if (km) {
-		            // 민감한 데이터 제거
-			    //         sodium_memzero(km, sizeof(key_manager_t));
-			    //                 free(km);
-			    //                         printf("🧹 Key manager destroyed\n");
-			    //                             }
-			    //                             }
-			    //
-			    //                             // 키 추가
-			    //                             int add_key(key_manager_t *km, uint32_t vpn_ip, const uint8_t *session_key) {
-			    //                                 // 빈 슬롯 찾기
-			    //                                     int index = -1;
-			    //                                         for (int i = 0; i < MAX_KEYS; i++) {
-			    //                                                 if (!km->keys[i].active) {
-			    //                                                             index = i;
-			    //                                                                         break;
-			    //                                                                                 }
-			    //                                                                                     }
-			    //                                                                                         
-			    //                                                                                             if (index == -1) {
-			    //                                                                                                     fprintf(stderr, "❌ Key table full\n");
-			    //                                                                                                             return -1;
-			    //                                                                                                                 }
-			    //                                                                                                                     
-			    //                                                                                                                         km->keys[index].vpn_ip = vpn_ip;
-			    //                                                                                                                             memcpy(km->keys[index].session_key, session_key, 32);
-			    //                                                                                                                                 km->keys[index].active = 1;
-			    //                                                                                                                                     km->count++;
-			    //                                                                                                                                         
-			    //                                                                                                                                             struct in_addr addr;
-			    //                                                                                                                                                 addr.s_addr = vpn_ip;
-			    //                                                                                                                                                     printf("🔑 Key// src/enclave/key_manager.c
+// src/enclave/key_manager.c
 
 #include "key_manager.h"
 #include "crypto.h"
@@ -64,7 +32,39 @@ key_manager_t* init_key_manager(void) {
 }
 
 // 키 관리자 제거
-void destroy_key added for %s\n", inet_ntoa(addr));
+void destroy_key_manager(key_manager_t *km) {
+    if (km) {
+        // 민감한 데이터 제거
+        sodium_memzero(km, sizeof(key_manager_t));
+        free(km);
+        printf("🧹 Key manager destroyed\n");
+    }
+}
+
+// 키 추가
+int add_key(key_manager_t *km, uint32_t vpn_ip, const uint8_t *session_key) {
+    // 빈 슬롯 찾기
+    int index = -1;
+    for (int i = 0; i < MAX_KEYS; i++) {
+        if (!km->keys[i].active) {
+            index = i;
+            break;
+        }
+    }
+    
+    if (index == -1) {
+        fprintf(stderr, "❌ Key table full\n");
+        return -1;
+    }
+    
+    km->keys[index].vpn_ip = vpn_ip;
+    memcpy(km->keys[index].session_key, session_key, 32);
+    km->keys[index].active = 1;
+    km->count++;
+    
+    struct in_addr addr;
+    addr.s_addr = vpn_ip;
+    printf("🔑 Key added for %s\n", inet_ntoa(addr));
     
     return 0;
 }

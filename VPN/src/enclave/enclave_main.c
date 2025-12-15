@@ -9,6 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/mman.h>
