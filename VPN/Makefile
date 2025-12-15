@@ -24,6 +24,7 @@ $(BUILD_DIR)/tun_test: $(SRC_DIR)/server/tun_test.c $(SRC_DIR)/server/tun_manage
 $(BUILD_DIR)/vpn_server: $(SRC_DIR)/server/vpn_server.c \
                           $(SRC_DIR)/server/tun_manager.c \
                           $(SRC_DIR)/server/udp_server.c \
+                          $(SRC_DIR)/server/client_manager.c \
                           $(SRC_DIR)/common/protocol.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
