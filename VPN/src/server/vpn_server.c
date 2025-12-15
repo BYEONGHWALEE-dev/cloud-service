@@ -89,6 +89,18 @@ void handle_udp_to_tun(int udp_fd, int tun_fd, client_table_t *table) {
                 remove_client(table, vpn_ip);
                 return;
             }
+
+	    printf("   📤 Sending server public key: ");
+	    for (int i = 0; i < 8; i++) {
+		    printf("%02x", server_public_key[i]);
+	    }
+	    printf("...\n");
+
+	    printf("   🔑 Session key (server): ");
+	    for (int i = 0; i < 8; i++) {
+		    printf("%02x", session_key[i]);
+	    }
+	    printf("...\n");
             
             // 응답 패킷 생성
             connect_response_t resp;
@@ -101,8 +113,10 @@ void handle_udp_to_tun(int udp_fd, int tun_fd, client_table_t *table) {
             resp.session_id = htonl(client->session_id);
             
             // 서버 공개키 추가 (reserved 필드 활용)
-            // 실제로는 구조체 확장 필요
-            
+           memcpy(resp.server_public_key, server_public_key, 32);
+	   printf("   ✅ Server public key copied to response\n");
+
+
             // 응답 전송
             udp_send(udp_fd, (uint8_t*)&resp, sizeof(resp), &client_addr);
             
