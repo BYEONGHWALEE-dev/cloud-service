@@ -12,7 +12,12 @@ INCLUDE_DIR = include
 # 타겟
 .PHONY: all clean test help
 
-all: $(BUILD_DIR)/tun_test $(BUILD_DIR)/vpn_server $(BUILD_DIR)/udp_test_client $(BUILD_DIR)/vpn_enclave $(BUILD_DIR)/test_enclave_ipc
+all: $(BUILD_DIR)/tun_test \
+     $(BUILD_DIR)/vpn_server \
+     $(BUILD_DIR)/udp_test_client \
+     $(BUILD_DIR)/vpn_enclave \
+     $(BUILD_DIR)/test_enclave_ipc \
+     $(BUILD_DIR)/vpn_client
 
 # TUN 테스트 프로그램 (기존)
 $(BUILD_DIR)/tun_test: $(SRC_DIR)/server/tun_test.c $(SRC_DIR)/server/tun_manager.c
@@ -38,6 +43,14 @@ $(BUILD_DIR)/vpn_enclave: $(SRC_DIR)/enclave/enclave_main.c \
                            $(SRC_DIR)/enclave/crypto.c \
                            $(SRC_DIR)/enclave/key_manager.c \
                            $(SRC_DIR)/common/ipc_protocol.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	@echo "✅ Build complete: $@"
+
+# VPN 클라이언트 (암호화 지원)
+$(BUILD_DIR)/vpn_client: $(SRC_DIR)/client/vpn_client.c \
+                          $(SRC_DIR)/enclave/crypto.c \
+                          $(SRC_DIR)/common/protocol.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 	@echo "✅ Build complete: $@"
