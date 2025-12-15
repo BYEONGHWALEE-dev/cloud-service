@@ -5,6 +5,8 @@
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
+#include <arpa/inet.h>
+#include <endian.h> 
 
 static uint32_t global_sequence = 0;
 
