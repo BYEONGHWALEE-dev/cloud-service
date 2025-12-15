@@ -4,6 +4,7 @@
 #define ENCLAVE_H
 
 #include <stdint.h>
+#include <sys/types.h>
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Enclave 프로세스 제어
