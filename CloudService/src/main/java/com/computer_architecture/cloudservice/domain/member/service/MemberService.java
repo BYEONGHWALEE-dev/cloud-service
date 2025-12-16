@@ -10,4 +10,6 @@ public interface MemberService {
     MemberResponseDto.LoginResponse login(MemberRequestDto.LoginRequest request);
 
     MemberResponseDto.MemberInfo getMemberInfo(Long memberId);
+
+    boolean existsByStudentNumber(String studentNumber);
 }

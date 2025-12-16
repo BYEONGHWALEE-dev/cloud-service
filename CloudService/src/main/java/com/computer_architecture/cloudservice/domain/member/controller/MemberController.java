@@ -66,4 +66,16 @@ public class MemberController {
                 response
         );
     }
+
+    /**
+     * 학번 중복 체크
+     */
+    @GetMapping("/check/{studentNumber}")
+    public ApiResponse<Boolean> checkStudentNumber(@PathVariable String studentNumber) {
+        boolean exists = memberService.existsByStudentNumber(studentNumber);
+        return ApiResponse.onSuccess(
+                new SuccessStatus(HttpStatus.OK, "MEMBER200", "조회 성공"),
+                exists
+        );
+    }
 }

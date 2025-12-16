@@ -19,6 +19,12 @@
     </div>
 </nav>
 
+<!-- 데이터 전달용 hidden 요소 -->
+<div id="vmData"
+     th:data-vm-id="${vm.id}"
+     th:data-vm-status="${vm.status.name()}"
+     style="display:none;"></div>
+
 <div class="container mt-4">
     <div class="row">
         <!-- VM 정보 -->
@@ -67,18 +73,18 @@
                     </table>
 
                     <div class="d-flex gap-2 mt-3">
-                        <button class="btn btn-success" id="startBtn"
-                                th:disabled="${vm.status.name() == 'RUNNING'}"
-                                th:onclick="'startVm(' + ${vm.id} + ')'">
+                        <button class="btn btn-success start-btn"
+                                th:data-id="${vm.id}"
+                                th:disabled="${vm.status.name() == 'RUNNING'}">
                             <i class="bi bi-play-fill"></i> 시작
                         </button>
-                        <button class="btn btn-warning" id="stopBtn"
-                                th:disabled="${vm.status.name() == 'STOPPED'}"
-                                th:onclick="'stopVm(' + ${vm.id} + ')'">
+                        <button class="btn btn-warning stop-btn"
+                                th:data-id="${vm.id}"
+                                th:disabled="${vm.status.name() == 'STOPPED'}">
                             <i class="bi bi-stop-fill"></i> 정지
                         </button>
-                        <button class="btn btn-danger"
-                                th:onclick="'deleteVm(' + ${vm.id} + ')'">
+                        <button class="btn btn-danger delete-btn"
+                                th:data-id="${vm.id}">
                             <i class="bi bi-trash"></i> 삭제
                         </button>
                     </div>
@@ -106,7 +112,7 @@
             <div class="card">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="mb-0">📊 리소스 모니터링</h5>
-                    <button class="btn btn-sm btn-outline-primary" onclick="refreshMonitoring()">
+                    <button class="btn btn-sm btn-outline-primary" id="refreshBtn">
                         <i class="bi bi-arrow-clockwise"></i> 새로고침
                     </button>
                 </div>
@@ -151,51 +157,66 @@
     </div>
 </div>
 
-<script th:inline="javascript">
-    const vmId = [[${vm.id}]];
-    const vmStatus = [[${vm.status.name()}]];
+<script>
+    // 데이터 가져오기
+    const vmDataEl = document.getElementById('vmData');
+    const vmId = vmDataEl.dataset.vmId;
+    const vmStatus = vmDataEl.dataset.vmStatus;
 
-    async function startVm(id) {
+    // 시작 버튼
+    document.querySelector('.start-btn').addEventListener('click', async function() {
+        const id = this.dataset.id;
         if (!confirm('VM을 시작하시겠습니까?')) return;
-        const response = await fetch(`/api/vms/${id}/start`, { method: 'POST' });
+
+        const response = await fetch('/api/vms/' + id + '/start', { method: 'POST' });
         const data = await response.json();
+
         if (data.isSuccess) {
             alert('VM이 시작되었습니다.');
             location.reload();
         } else {
             alert('시작 실패: ' + data.message);
         }
-    }
+    });
 
-    async function stopVm(id) {
+    // 정지 버튼
+    document.querySelector('.stop-btn').addEventListener('click', async function() {
+        const id = this.dataset.id;
         if (!confirm('VM을 정지하시겠습니까?')) return;
-        const response = await fetch(`/api/vms/${id}/stop`, { method: 'POST' });
+
+        const response = await fetch('/api/vms/' + id + '/stop', { method: 'POST' });
         const data = await response.json();
+
         if (data.isSuccess) {
             alert('VM이 정지되었습니다.');
             location.reload();
         } else {
             alert('정지 실패: ' + data.message);
         }
-    }
+    });
 
-    async function deleteVm(id) {
+    // 삭제 버튼
+    document.querySelector('.delete-btn').addEventListener('click', async function() {
+        const id = this.dataset.id;
         if (!confirm('정말 VM을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.')) return;
-        const response = await fetch(`/api/vms/${id}`, { method: 'DELETE' });
+
+        const response = await fetch('/api/vms/' + id, { method: 'DELETE' });
         const data = await response.json();
+
         if (data.isSuccess) {
             alert('VM이 삭제되었습니다.');
             window.location.href = '/dashboard';
         } else {
             alert('삭제 실패: ' + data.message);
         }
-    }
+    });
 
+    // 모니터링 새로고침
     async function refreshMonitoring() {
         if (vmStatus !== 'RUNNING') return;
 
         try {
-            const response = await fetch(`/api/vms/${vmId}/monitoring`);
+            const response = await fetch('/api/vms/' + vmId + '/monitoring');
             const data = await response.json();
 
             if (data.isSuccess) {
@@ -208,17 +229,20 @@
 
                 const hours = Math.floor(m.uptimeSeconds / 3600);
                 const minutes = Math.floor((m.uptimeSeconds % 3600) / 60);
-                document.getElementById('uptime').textContent = `${hours}시간 ${minutes}분`;
+                document.getElementById('uptime').textContent = hours + '시간 ' + minutes + '분';
             }
         } catch (error) {
             console.error('모니터링 조회 실패:', error);
         }
     }
 
+    // 새로고침 버튼
+    document.getElementById('refreshBtn').addEventListener('click', refreshMonitoring);
+
     // 초기 로딩 및 자동 새로고침
     if (vmStatus === 'RUNNING') {
         refreshMonitoring();
-        setInterval(refreshMonitoring, 10000);  // 10초마다 새로고침
+        setInterval(refreshMonitoring, 10000);
     }
 </script>
 </body>

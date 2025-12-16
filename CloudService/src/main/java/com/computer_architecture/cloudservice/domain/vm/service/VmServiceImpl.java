@@ -66,42 +66,38 @@ public class VmServiceImpl implements VmService {
         String taskId = proxmoxApiService.cloneVm(newVmId, request.getVmName());
         log.info("VM 복제 작업 시작: taskId={}", taskId);
 
-        // 5. VM 스펙 설정 (CPU, 메모리) - 추가
-        try {
-            // clone 작업 완료 대기 (간단히 sleep, 실제로는 task 상태 확인 필요)
-            Thread.sleep(5000);
+        // 5. Clone 작업 완료 대기 (최대 120초) - 수정된 부분!
+        if (taskId != null) {
+            proxmoxApiService.waitForTask(taskId, 120);
+        }
 
+        // 6. VM 스펙 설정
+        try {
             proxmoxApiService.configureVmSpec(newVmId, request.getCpuCores(), request.getMemoryMb());
 
-            // 디스크 리사이즈 (템플릿보다 큰 경우만)
-            if (request.getDiskGb() > 20) {  // 템플릿 기본값이 20GB라고 가정
+            if (request.getDiskGb() > 20) {
                 proxmoxApiService.resizeVmDisk(newVmId, request.getDiskGb());
             }
 
-            // Cloud-init 설정 (IP, SSH 키)
-            String sshKey = request.getSshPublicKey() != null ? request.getSshPublicKey() : "";
-            if (!sshKey.isEmpty()) {
+            String sshKey = request.getSshPublicKey();
+            if (sshKey != null && !sshKey.isEmpty()) {
                 proxmoxApiService.configureCloudInit(newVmId, internalIp, sshKey);
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("VM 설정 중 인터럽트 발생");
         } catch (Exception e) {
             log.error("VM 스펙 설정 실패: {}", e.getMessage());
-            // 실패해도 VM은 생성됨, 로그만 남김
         }
 
-        // 6. DB에 VM 정보 저장
+        // 7. DB에 VM 정보 저장
         VMachine vm = VMachine.builder()
                 .proxmoxVmId(newVmId)
                 .vmName(request.getVmName())
                 .internalIp(internalIp)
-                .status(VmStatus.STOPPED)  // 생성 직후는 STOPPED
+                .status(VmStatus.STOPPED)
                 .build();
         vm.assignToMember(member);
         VMachine savedVm = vmRepository.save(vm);
 
-        // 7. VM 스펙 저장
+        // 8. VM 스펙 저장
         VMSpec vmSpec = VMSpec.builder()
                 .cpuCores(request.getCpuCores())
                 .memoryMb(request.getMemoryMb())
@@ -110,7 +106,7 @@ public class VmServiceImpl implements VmService {
         vmSpec.assignToVMachine(savedVm);
         vmSpecRepository.save(vmSpec);
 
-        // 8. SSH 인증정보 저장
+        // 9. SSH 인증정보 저장
         String sshKey = request.getSshPublicKey() != null ? request.getSshPublicKey() : "";
         SSHCredential sshCredential = SSHCredential.builder()
                 .username(DEFAULT_SSH_USER)

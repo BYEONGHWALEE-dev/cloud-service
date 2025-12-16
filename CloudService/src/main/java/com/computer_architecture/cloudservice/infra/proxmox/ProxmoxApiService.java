@@ -307,4 +307,40 @@ public class ProxmoxApiService {
                 .status(data.getStatus())
                 .build();
     }
+
+    /**
+     * Task 완료 대기
+     */
+    public void waitForTask(String upid, int timeoutSeconds) {
+        String node = proxmoxConfig.getNode();
+        log.info("Task 완료 대기 중: {}", upid);
+
+        long startTime = System.currentTimeMillis();
+        long timeout = timeoutSeconds * 1000L;
+
+        while (System.currentTimeMillis() - startTime < timeout) {
+            try {
+                String response = proxmoxWebClient.get()
+                        .uri("/api2/json/nodes/{node}/tasks/{upid}/status", node, upid)
+                        .header("Cookie", "PVEAuthCookie=" + ticket)
+                        .header("CSRFPreventionToken", csrfToken)
+                        .retrieve()
+                        .bodyToMono(String.class)
+                        .block();
+
+                if (response != null && response.contains("\"status\":\"stopped\"")) {
+                    log.info("Task 완료됨: {}", upid);
+                    return;
+                }
+
+                Thread.sleep(2000);  // 2초마다 체크
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+
+        log.warn("Task 타임아웃 ({}초): {}", timeoutSeconds, upid);
+    }
+
 }

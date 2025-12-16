@@ -66,4 +66,9 @@ public class MemberServiceImpl implements MemberService {
 
         return MemberResponseDto.MemberInfo.from(member);
     }
+
+    @Override
+    public boolean existsByStudentNumber(String studentNumber) {
+        return memberRepository.existsByStudentNumber(studentNumber);
+    }
 }
