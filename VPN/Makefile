@@ -51,7 +51,9 @@ $(BUILD_DIR)/vpn_enclave: $(SRC_DIR)/enclave/enclave_main.c \
 $(BUILD_DIR)/vpn_client: $(SRC_DIR)/client/vpn_client.c \
                           $(SRC_DIR)/server/tun_manager.c \
                           $(SRC_DIR)/enclave/crypto.c \
-                          $(SRC_DIR)/common/protocol.c
+                          $(SRC_DIR)/common/protocol.c \
+                          $(SRC_DIR)/common/config.c \
+                          $(SRC_DIR)/common/logger.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 	@echo "✅ Build complete: $@"
