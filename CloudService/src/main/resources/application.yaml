@@ -24,10 +24,10 @@ spring:
 
 # Proxmox 설정
 proxmox:
-  host: https://192.168.0.100:8006  # Proxmox 호스트 IP로 변경하세요
+  host: https://192.168.0.22:8006  # Proxmox 호스트 IP로 변경하세요
   node: pve                          # 노드 이름
-  username: root@pam                 # Proxmox 사용자명
-  password: your-password            # Proxmox 비밀번호
+  username: root                 # Proxmox 사용자명
+  password: skfktkfkd1;            # Proxmox 비밀번호
   template-vmid: 9000                # 템플릿 VM ID
 
 # VM 설정
