@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VM 생성 - Cloud Service</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+<!-- 네비게이션 -->
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+    <div class="container">
+        <a class="navbar-brand" href="/dashboard">🖥️ Cloud Service</a>
+        <div class="navbar-nav ms-auto">
+            <a class="nav-link" href="/dashboard">대시보드</a>
+            <a class="nav-link" href="/logout">로그아웃</a>
+        </div>
+    </div>
+</nav>
+
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h4 class="mb-0">🆕 새 가상머신 생성</h4>
+                </div>
+                <div class="card-body">
+                    <div id="errorAlert" class="alert alert-danger d-none"></div>
+
+                    <form id="createVmForm">
+                        <input type="hidden" id="memberId" th:value="${memberId}">
+
+                        <div class="mb-3">
+                            <label class="form-label">VM 이름</label>
+                            <input type="text" class="form-control" id="vmName" placeholder="my-vm-01" required>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">CPU 코어</label>
+                            <select class="form-select" id="cpuCores">
+                                <option value="1">1 코어</option>
+                                <option value="2" selected>2 코어</option>
+                                <option value="4">4 코어</option>
+                            </select>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">메모리 (RAM)</label>
+                            <select class="form-select" id="memoryMb">
+                                <option value="512">512 MB</option>
+                                <option value="1024">1 GB</option>
+                                <option value="2048" selected>2 GB</option>
+                                <option value="4096">4 GB</option>
+                                <option value="8192">8 GB</option>
+                            </select>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">디스크</label>
+                            <select class="form-select" id="diskGb">
+                                <option value="10">10 GB</option>
+                                <option value="20" selected>20 GB</option>
+                                <option value="50">50 GB</option>
+                                <option value="100">100 GB</option>
+                            </select>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">SSH 공개키 (선택)</label>
+                            <textarea class="form-control" id="sshPublicKey" rows="3" placeholder="ssh-rsa AAAA..."></textarea>
+                        </div>
+
+                        <div class="d-flex gap-2">
+                            <button type="submit" class="btn btn-primary" id="submitBtn">
+                                VM 생성
+                            </button>
+                            <a href="/dashboard" class="btn btn-secondary">취소</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.getElementById('createVmForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const submitBtn = document.getElementById('submitBtn');
+        submitBtn.disabled = true;
+        submitBtn.textContent = '생성 중...';
+
+        const data = {
+            memberId: parseInt(document.getElementById('memberId').value),
+            vmName: document.getElementById('vmName').value,
+            cpuCores: parseInt(document.getElementById('cpuCores').value),
+            memoryMb: parseInt(document.getElementById('memoryMb').value),
+            diskGb: parseInt(document.getElementById('diskGb').value),
+            sshPublicKey: document.getElementById('sshPublicKey').value || null
+        };
+
+        try {
+            const response = await fetch('/api/vms', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+
+            const result = await response.json();
+
+            if (result.isSuccess) {
+                alert('VM 생성이 시작되었습니다!\n' + result.Result.message);
+                window.location.href = '/dashboard';
+            } else {
+                document.getElementById('errorAlert').textContent = result.message;
+                document.getElementById('errorAlert').classList.remove('d-none');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'VM 생성';
+            }
+        } catch (error) {
+            document.getElementById('errorAlert').textContent = 'VM 생성 실패: ' + error.message;
+            document.getElementById('errorAlert').classList.remove('d-none');
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'VM 생성';
+        }
+    });
+</script>
+</body>
+</html>

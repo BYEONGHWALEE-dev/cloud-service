@@ -23,13 +23,13 @@ public class VMSpec extends BaseEntity {
     private VMachine vMachine;
 
     @Column(name = "cpu_cores", nullable = false)
-    private Short cpuCores;
+    private Integer cpuCores;  // Short → Integer
 
     @Column(name = "memory_mb", nullable = false)
-    private Short memoryMb;
+    private Integer memoryMb;  // Short → Integer (2048MB 등 지원)
 
     @Column(name = "disk_gb", nullable = false)
-    private Short diskGb;
+    private Integer diskGb;    // Short → Integer
 
     // 연관관계 편의 메서드
     public void assignToVMachine(VMachine vMachine) {

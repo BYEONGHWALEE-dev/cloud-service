@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VM 상세 - Cloud Service</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+</head>
+<body>
+<!-- 네비게이션 -->
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+    <div class="container">
+        <a class="navbar-brand" href="/dashboard">🖥️ Cloud Service</a>
+        <div class="navbar-nav ms-auto">
+            <a class="nav-link" href="/dashboard">대시보드</a>
+            <a class="nav-link" href="/logout">로그아웃</a>
+        </div>
+    </div>
+</nav>
+
+<!-- 데이터 전달용 hidden 요소 - proxmoxVmId 추가 -->
+<div id="vmData"
+     th:data-vm-id="${vm.id}"
+     th:data-proxmox-vm-id="${vm.proxmoxVmId}"
+     th:data-vm-status="${vm.status.name()}"
+     style="display:none;"></div>
+
+<div class="container mt-4">
+    <div class="row">
+        <!-- VM 정보 -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h4 class="mb-0" th:text="${vm.vmName}">VM Name</h4>
+                    <span class="badge fs-6"
+                          th:classappend="${vm.status.name() == 'RUNNING'} ? 'bg-success' : 'bg-secondary'"
+                          th:text="${vm.status.description}">상태</span>
+                </div>
+                <div class="card-body">
+                    <table class="table">
+                        <tr>
+                            <th>VM ID</th>
+                            <td th:text="${vm.id}">1</td>
+                        </tr>
+                        <tr>
+                            <th>Proxmox VM ID</th>
+                            <td th:text="${vm.proxmoxVmId}">100</td>
+                        </tr>
+                        <tr>
+                            <th>내부 IP</th>
+                            <td th:text="${vm.internalIp} ?: '할당 중...'">192.168.100.10</td>
+                        </tr>
+                        <tr th:if="${vm.spec != null}">
+                            <th>CPU</th>
+                            <td><span th:text="${vm.spec.cpuCores}">2</span> vCPU</td>
+                        </tr>
+                        <tr th:if="${vm.spec != null}">
+                            <th>메모리</th>
+                            <td><span th:text="${vm.spec.memoryMb}">2048</span> MB</td>
+                        </tr>
+                        <tr th:if="${vm.spec != null}">
+                            <th>디스크</th>
+                            <td><span th:text="${vm.spec.diskGb}">20</span> GB</td>
+                        </tr>
+                        <tr th:if="${vm.ssh != null}">
+                            <th>SSH 사용자</th>
+                            <td th:text="${vm.ssh.username}">ubuntu</td>
+                        </tr>
+                        <tr>
+                            <th>생성일</th>
+                            <td th:text="${#temporals.format(vm.createdAt, 'yyyy-MM-dd HH:mm')}">2025-01-01</td>
+                        </tr>
+                    </table>
+
+                    <div class="d-flex gap-2 mt-3">
+                        <button class="btn btn-success start-btn"
+                                th:data-id="${vm.id}"
+                                th:disabled="${vm.status.name() == 'RUNNING'}">
+                            <i class="bi bi-play-fill"></i> 시작
+                        </button>
+                        <button class="btn btn-warning stop-btn"
+                                th:data-id="${vm.id}"
+                                th:disabled="${vm.status.name() == 'STOPPED'}">
+                            <i class="bi bi-stop-fill"></i> 정지
+                        </button>
+                        <button class="btn btn-danger delete-btn"
+                                th:data-id="${vm.id}">
+                            <i class="bi bi-trash"></i> 삭제
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SSH 접속 정보 -->
+            <div class="card mt-3" th:if="${vm.status.name() == 'RUNNING'}">
+                <div class="card-header">
+                    <h5 class="mb-0">🔗 SSH 접속 방법</h5>
+                </div>
+                <div class="card-body">
+                    <p class="mb-2">1. VPN에 먼저 연결하세요</p>
+                    <p class="mb-2">2. 아래 명령어로 SSH 접속:</p>
+                    <code class="d-block bg-dark text-light p-2 rounded"
+                          th:text="'ssh soongsil@' + ${vm.internalIp}">
+                        ssh soongsil@10.8.0.15
+                    </code>
+                </div>
+            </div>
+        </div>
+
+        <!-- 모니터링 -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">📊 리소스 모니터링</h5>
+                    <button class="btn btn-sm btn-outline-primary" id="refreshBtn">
+                        <i class="bi bi-arrow-clockwise"></i> 새로고침
+                    </button>
+                </div>
+                <div class="card-body" id="monitoringData">
+                    <div th:if="${vm.status.name() != 'RUNNING'}" class="text-center text-muted py-4">
+                        <i class="bi bi-power" style="font-size: 2rem;"></i>
+                        <p class="mt-2">VM이 실행 중이 아닙니다</p>
+                    </div>
+
+                    <div th:if="${vm.status.name() == 'RUNNING'}" id="monitoringContent">
+                        <div class="mb-4">
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>CPU 사용률</span>
+                                <span id="cpuPercent">로딩 중...</span>
+                            </div>
+                            <div class="progress">
+                                <div class="progress-bar bg-primary" id="cpuBar" style="width: 0%"></div>
+                            </div>
+                        </div>
+
+                        <div class="mb-4">
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>메모리 사용률</span>
+                                <span id="memPercent">로딩 중...</span>
+                            </div>
+                            <div class="progress">
+                                <div class="progress-bar bg-success" id="memBar" style="width: 0%"></div>
+                            </div>
+                        </div>
+
+                        <div>
+                            <p><strong>가동 시간:</strong> <span id="uptime">-</span></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-3">
+        <a href="/dashboard" class="btn btn-secondary">← 목록으로</a>
+    </div>
+</div>
+
+<script>
+    // 데이터 가져오기
+    const vmDataEl = document.getElementById('vmData');
+    const vmId = vmDataEl.dataset.vmId;
+    const proxmoxVmId = vmDataEl.dataset.proxmoxVmId;  // 추가
+    const vmStatus = vmDataEl.dataset.vmStatus;
+
+    // 시작 버튼
+    document.querySelector('.start-btn').addEventListener('click', async function() {
+        const id = this.dataset.id;
+        if (!confirm('VM을 시작하시겠습니까?')) return;
+
+        const response = await fetch('/api/vms/' + id + '/start', { method: 'POST' });
+        const data = await response.json();
+
+        if (data.isSuccess) {
+            alert('VM이 시작되었습니다.');
+            location.reload();
+        } else {
+            alert('시작 실패: ' + data.message);
+        }
+    });
+
+    // 정지 버튼
+    document.querySelector('.stop-btn').addEventListener('click', async function() {
+        const id = this.dataset.id;
+        if (!confirm('VM을 정지하시겠습니까?')) return;
+
+        const response = await fetch('/api/vms/' + id + '/stop', { method: 'POST' });
+        const data = await response.json();
+
+        if (data.isSuccess) {
+            alert('VM이 정지되었습니다.');
+            location.reload();
+        } else {
+            alert('정지 실패: ' + data.message);
+        }
+    });
+
+    // 삭제 버튼
+    document.querySelector('.delete-btn').addEventListener('click', async function() {
+        const id = this.dataset.id;
+        if (!confirm('정말 VM을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.')) return;
+
+        const response = await fetch('/api/vms/' + id, { method: 'DELETE' });
+        const data = await response.json();
+
+        if (data.isSuccess) {
+            alert('VM이 삭제되었습니다.');
+            window.location.href = '/dashboard';
+        } else {
+            alert('삭제 실패: ' + data.message);
+        }
+    });
+
+    // 모니터링 새로고침
+    async function refreshMonitoring() {
+        if (vmStatus !== 'RUNNING') return;
+
+        try {
+            const response = await fetch('/api/vms/monitoring/proxmox/' + proxmoxVmId);
+
+            if (!response.ok) {
+                document.getElementById('cpuPercent').textContent = '조회 실패';
+                document.getElementById('memPercent').textContent = '조회 실패';
+                document.getElementById('uptime').textContent = 'Proxmox 연결 오류';
+                return;
+            }
+
+            const data = await response.json();
+
+            if (data.isSuccess && data.result) {  // Result → result
+                const m = data.result;  // Result → result
+
+                // CPU
+                const cpuPercent = m.cpuUsagePercent ? m.cpuUsagePercent.toFixed(1) : '0.0';
+                document.getElementById('cpuPercent').textContent = cpuPercent + '%';
+                document.getElementById('cpuBar').style.width = cpuPercent + '%';
+
+                // 메모리
+                const memUsed = m.memoryUsedMb || 0;
+                const memTotal = m.memoryTotalMb || 0;
+                const memPercent = m.memoryUsagePercent ? m.memoryUsagePercent.toFixed(1) : '0.0';
+                document.getElementById('memPercent').textContent = memUsed + ' / ' + memTotal + ' MB (' + memPercent + '%)';
+                document.getElementById('memBar').style.width = memPercent + '%';
+
+                // 가동 시간
+                const uptimeSeconds = m.uptimeSeconds || 0;
+                const hours = Math.floor(uptimeSeconds / 3600);
+                const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+                document.getElementById('uptime').textContent = hours + '시간 ' + minutes + '분';
+            } else {
+                document.getElementById('cpuPercent').textContent = '데이터 없음';
+                document.getElementById('memPercent').textContent = '데이터 없음';
+                document.getElementById('uptime').textContent = '-';
+            }
+        } catch (error) {
+            console.error('모니터링 조회 실패:', error);
+            document.getElementById('cpuPercent').textContent = '연결 오류';
+            document.getElementById('memPercent').textContent = '연결 오류';
+            document.getElementById('uptime').textContent = 'Proxmox 서버 확인 필요';
+        }
+    }
+    // 새로고침 버튼
+    document.getElementById('refreshBtn').addEventListener('click', refreshMonitoring);
+
+    // 초기 로딩 및 자동 새로고침
+    if (vmStatus === 'RUNNING') {
+        refreshMonitoring();
+        setInterval(refreshMonitoring, 10000);
+    }
+</script>
+</body>
+</html>
