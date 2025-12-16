@@ -8,6 +8,7 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 @Service
 @RequiredArgsConstructor
@@ -27,22 +28,72 @@ public class ProxmoxApiService {
     public void authenticate() {
         log.info("Proxmox 인증 시도: {}", proxmoxConfig.getUsername());
 
-        ProxmoxAuthResponse response = proxmoxWebClient.post()
-                .uri("/api2/json/access/ticket")
-                .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                .body(BodyInserters
-                        .fromFormData("username", proxmoxConfig.getUsername())
-                        .with("password", proxmoxConfig.getPassword()))
-                .retrieve()
-                .bodyToMono(ProxmoxAuthResponse.class)
-                .block();
+        try {
+            ProxmoxAuthResponse response = proxmoxWebClient.post()
+                    .uri("/api2/json/access/ticket")
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .body(BodyInserters
+                            .fromFormData("username", proxmoxConfig.getUsername())
+                            .with("password", proxmoxConfig.getPassword()))
+                    .retrieve()
+                    .bodyToMono(ProxmoxAuthResponse.class)
+                    .block();
 
-        if (response != null && response.getData() != null) {
-            this.ticket = response.getData().getTicket();
-            this.csrfToken = response.getData().getCsrfPreventionToken();
-            log.info("Proxmox 인증 성공");
-        } else {
-            throw new RuntimeException("Proxmox 인증 실패");
+            if (response != null && response.getData() != null) {
+                this.ticket = response.getData().getTicket();
+                this.csrfToken = response.getData().getCsrfPreventionToken();
+                log.info("Proxmox 인증 성공");
+            } else {
+                throw new RuntimeException("Proxmox 인증 실패: 응답이 없습니다");
+            }
+        } catch (WebClientResponseException.Unauthorized e) {
+            log.error("Proxmox 인증 실패: 아이디 또는 비밀번호가 틀렸습니다");
+            throw new RuntimeException("Proxmox 인증 실패: 아이디 또는 비밀번호 확인 필요", e);
+        }
+    }
+
+    /**
+     * 인증 상태 확인 및 재인증
+     */
+    private void ensureAuthenticated() {
+        if (ticket == null || csrfToken == null) {
+            authenticate();
+        }
+    }
+
+    /**
+     * 다음 사용 가능한 VM ID 조회
+     */
+    public Integer getNextVmId() {
+        ensureAuthenticated();
+        String node = proxmoxConfig.getNode();
+
+        try {
+            ProxmoxVmListResponse response = proxmoxWebClient.get()
+                    .uri("/api2/json/nodes/{node}/qemu", node)
+                    .header("Cookie", "PVEAuthCookie=" + ticket)
+                    .header("CSRFPreventionToken", csrfToken)
+                    .retrieve()
+                    .bodyToMono(ProxmoxVmListResponse.class)
+                    .block();
+
+            if (response == null || response.getData() == null) {
+                return 100;
+            }
+
+            return response.getData().stream()
+                    .map(ProxmoxVmListResponse.VmData::getVmid)
+                    .filter(vmid -> vmid >= 100 && !vmid.equals(proxmoxConfig.getTemplateVmid()))
+                    .max(Integer::compareTo)
+                    .map(max -> max + 1)
+                    .orElse(100);
+        } catch (WebClientResponseException.Unauthorized e) {
+            // 토큰 만료 시 재인증 후 재시도
+            log.warn("토큰 만료, 재인증 후 재시도...");
+            this.ticket = null;
+            this.csrfToken = null;
+            authenticate();
+            return getNextVmId();
         }
     }
 
@@ -51,7 +102,6 @@ public class ProxmoxApiService {
      */
     public String cloneVm(Integer newVmId, String vmName) {
         ensureAuthenticated();
-
         String node = proxmoxConfig.getNode();
         Integer templateId = proxmoxConfig.getTemplateVmid();
 
@@ -65,7 +115,7 @@ public class ProxmoxApiService {
                 .body(BodyInserters
                         .fromFormData("newid", String.valueOf(newVmId))
                         .with("name", vmName)
-                        .with("full", "1"))  // full clone
+                        .with("full", "1"))
                 .retrieve()
                 .bodyToMono(ProxmoxTaskResponse.class)
                 .block();
@@ -75,163 +125,46 @@ public class ProxmoxApiService {
     }
 
     /**
-     * VM에 Cloud-init 설정 (IP, SSH 키 등)
+     * Task 완료 대기
      */
-    public void configureCloudInit(Integer vmId, String ipAddress, String sshPublicKey) {
+    public void waitForTask(String upid, int timeoutSeconds) {
         ensureAuthenticated();
-
         String node = proxmoxConfig.getNode();
-        String ipConfig = String.format("ip=%s/24,gw=192.168.100.1", ipAddress);
+        log.info("Task 완료 대기 중: {}", upid);
 
-        log.info("Cloud-init 설정: VM={}, IP={}", vmId, ipAddress);
+        long startTime = System.currentTimeMillis();
+        long timeout = timeoutSeconds * 1000L;
 
-        proxmoxWebClient.put()
-                .uri("/api2/json/nodes/{node}/qemu/{vmid}/config", node, vmId)
-                .header("Cookie", "PVEAuthCookie=" + ticket)
-                .header("CSRFPreventionToken", csrfToken)
-                .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                .body(BodyInserters
-                        .fromFormData("ipconfig0", ipConfig)
-                        .with("sshkeys", encodeUri(sshPublicKey)))
-                .retrieve()
-                .bodyToMono(String.class)
-                .block();
+        while (System.currentTimeMillis() - startTime < timeout) {
+            try {
+                String response = proxmoxWebClient.get()
+                        .uri("/api2/json/nodes/{node}/tasks/{upid}/status", node, upid)
+                        .header("Cookie", "PVEAuthCookie=" + ticket)
+                        .header("CSRFPreventionToken", csrfToken)
+                        .retrieve()
+                        .bodyToMono(String.class)
+                        .block();
 
-        log.info("Cloud-init 설정 완료");
-    }
+                if (response != null && response.contains("\"status\":\"stopped\"")) {
+                    log.info("Task 완료됨: {}", upid);
+                    return;
+                }
 
-    /**
-     * VM 시작
-     */
-    public String startVm(Integer vmId) {
-        ensureAuthenticated();
-
-        String node = proxmoxConfig.getNode();
-        log.info("VM 시작: {}", vmId);
-
-        ProxmoxTaskResponse response = proxmoxWebClient.post()
-                .uri("/api2/json/nodes/{node}/qemu/{vmid}/status/start", node, vmId)
-                .header("Cookie", "PVEAuthCookie=" + ticket)
-                .header("CSRFPreventionToken", csrfToken)
-                .retrieve()
-                .bodyToMono(ProxmoxTaskResponse.class)
-                .block();
-
-        return response != null ? response.getData() : null;
-    }
-
-    /**
-     * VM 정지
-     */
-    public String stopVm(Integer vmId) {
-        ensureAuthenticated();
-
-        String node = proxmoxConfig.getNode();
-        log.info("VM 정지: {}", vmId);
-
-        ProxmoxTaskResponse response = proxmoxWebClient.post()
-                .uri("/api2/json/nodes/{node}/qemu/{vmid}/status/stop", node, vmId)
-                .header("Cookie", "PVEAuthCookie=" + ticket)
-                .header("CSRFPreventionToken", csrfToken)
-                .retrieve()
-                .bodyToMono(ProxmoxTaskResponse.class)
-                .block();
-
-        return response != null ? response.getData() : null;
-    }
-
-    /**
-     * VM 삭제
-     */
-    public String deleteVm(Integer vmId) {
-        ensureAuthenticated();
-
-        String node = proxmoxConfig.getNode();
-        log.info("VM 삭제: {}", vmId);
-
-        ProxmoxTaskResponse response = proxmoxWebClient.delete()
-                .uri("/api2/json/nodes/{node}/qemu/{vmid}", node, vmId)
-                .header("Cookie", "PVEAuthCookie=" + ticket)
-                .header("CSRFPreventionToken", csrfToken)
-                .retrieve()
-                .bodyToMono(ProxmoxTaskResponse.class)
-                .block();
-
-        return response != null ? response.getData() : null;
-    }
-
-    /**
-     * VM 상태 조회
-     */
-    public ProxmoxVmStatusResponse.StatusData getVmStatus(Integer vmId) {
-        ensureAuthenticated();
-
-        String node = proxmoxConfig.getNode();
-
-        ProxmoxVmStatusResponse response = proxmoxWebClient.get()
-                .uri("/api2/json/nodes/{node}/qemu/{vmid}/status/current", node, vmId)
-                .header("Cookie", "PVEAuthCookie=" + ticket)
-                .header("CSRFPreventionToken", csrfToken)
-                .retrieve()
-                .bodyToMono(ProxmoxVmStatusResponse.class)
-                .block();
-
-        return response != null ? response.getData() : null;
-    }
-
-    /**
-     * 다음 사용 가능한 VM ID 조회
-     */
-    public Integer getNextVmId() {
-        ensureAuthenticated();
-
-        String node = proxmoxConfig.getNode();
-
-        ProxmoxVmListResponse response = proxmoxWebClient.get()
-                .uri("/api2/json/nodes/{node}/qemu", node)
-                .header("Cookie", "PVEAuthCookie=" + ticket)
-                .header("CSRFPreventionToken", csrfToken)
-                .retrieve()
-                .bodyToMono(ProxmoxVmListResponse.class)
-                .block();
-
-        if (response == null || response.getData() == null) {
-            return 100;  // 기본값
+                Thread.sleep(2000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
         }
 
-        // 현재 VM ID들 중 최대값 + 1 반환 (템플릿 제외)
-        return response.getData().stream()
-                .map(ProxmoxVmListResponse.VmData::getVmid)
-                .filter(vmid -> vmid >= 100 && !vmid.equals(proxmoxConfig.getTemplateVmid()))
-                .max(Integer::compareTo)
-                .map(max -> max + 1)
-                .orElse(100);
+        log.warn("Task 타임아웃 ({}초): {}", timeoutSeconds, upid);
     }
 
     /**
-     * 인증 상태 확인 및 재인증
-     */
-    private void ensureAuthenticated() {
-        if (ticket == null || csrfToken == null) {
-            authenticate();
-        }
-    }
-
-    /**
-     * SSH 키 URL 인코딩
-     */
-    private String encodeUri(String value) {
-        return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8);
-    }
-
-    // ============ 기존 코드 아래에 추가 ============
-
-    /**
-     * VM 스펙 설정 (CPU, 메모리, 디스크)
+     * VM 스펙 설정 (CPU, 메모리)
      */
     public void configureVmSpec(Integer vmId, Integer cpuCores, Integer memoryMb) {
         ensureAuthenticated();
-
         String node = proxmoxConfig.getNode();
         log.info("VM 스펙 설정: vmId={}, cpu={}, memory={}MB", vmId, cpuCores, memoryMb);
 
@@ -255,7 +188,6 @@ public class ProxmoxApiService {
      */
     public void resizeVmDisk(Integer vmId, Integer diskGb) {
         ensureAuthenticated();
-
         String node = proxmoxConfig.getNode();
         String size = diskGb + "G";
         log.info("VM 디스크 리사이즈: vmId={}, size={}", vmId, size);
@@ -276,26 +208,123 @@ public class ProxmoxApiService {
     }
 
     /**
-     * VM 리소스 사용량 조회 (실시간)
+     * VM Cloud-init 설정
      */
-    public VmResourceUsage getVmResourceUsage(Integer vmId) {
+    public void configureCloudInit(Integer vmId, String ipAddress, String sshPublicKey) {
         ensureAuthenticated();
-
         String node = proxmoxConfig.getNode();
+        String ipConfig = String.format("ip=%s/24,gw=10.8.0.1", ipAddress);
 
-        ProxmoxVmStatusResponse response = proxmoxWebClient.get()
-                .uri("/api2/json/nodes/{node}/qemu/{vmid}/status/current", node, vmId)
+        log.info("Cloud-init 설정: VM={}, IP={}", vmId, ipAddress);
+
+        proxmoxWebClient.put()
+                .uri("/api2/json/nodes/{node}/qemu/{vmid}/config", node, vmId)
+                .header("Cookie", "PVEAuthCookie=" + ticket)
+                .header("CSRFPreventionToken", csrfToken)
+                .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                .body(BodyInserters
+                        .fromFormData("ipconfig0", ipConfig)
+                        .with("sshkeys", encodeUri(sshPublicKey)))
+                .retrieve()
+                .bodyToMono(String.class)
+                .block();
+
+        log.info("Cloud-init 설정 완료");
+    }
+
+    /**
+     * VM 시작
+     */
+    public String startVm(Integer vmId) {
+        ensureAuthenticated();
+        String node = proxmoxConfig.getNode();
+        log.info("VM 시작: {}", vmId);
+
+        ProxmoxTaskResponse response = proxmoxWebClient.post()
+                .uri("/api2/json/nodes/{node}/qemu/{vmid}/status/start", node, vmId)
                 .header("Cookie", "PVEAuthCookie=" + ticket)
                 .header("CSRFPreventionToken", csrfToken)
                 .retrieve()
-                .bodyToMono(ProxmoxVmStatusResponse.class)
+                .bodyToMono(ProxmoxTaskResponse.class)
                 .block();
 
-        if (response == null || response.getData() == null) {
+        return response != null ? response.getData() : null;
+    }
+
+    /**
+     * VM 정지
+     */
+    public String stopVm(Integer vmId) {
+        ensureAuthenticated();
+        String node = proxmoxConfig.getNode();
+        log.info("VM 정지: {}", vmId);
+
+        ProxmoxTaskResponse response = proxmoxWebClient.post()
+                .uri("/api2/json/nodes/{node}/qemu/{vmid}/status/stop", node, vmId)
+                .header("Cookie", "PVEAuthCookie=" + ticket)
+                .header("CSRFPreventionToken", csrfToken)
+                .retrieve()
+                .bodyToMono(ProxmoxTaskResponse.class)
+                .block();
+
+        return response != null ? response.getData() : null;
+    }
+
+    /**
+     * VM 삭제
+     */
+    public String deleteVm(Integer vmId) {
+        ensureAuthenticated();
+        String node = proxmoxConfig.getNode();
+        log.info("VM 삭제: {}", vmId);
+
+        ProxmoxTaskResponse response = proxmoxWebClient.delete()
+                .uri("/api2/json/nodes/{node}/qemu/{vmid}", node, vmId)
+                .header("Cookie", "PVEAuthCookie=" + ticket)
+                .header("CSRFPreventionToken", csrfToken)
+                .retrieve()
+                .bodyToMono(ProxmoxTaskResponse.class)
+                .block();
+
+        return response != null ? response.getData() : null;
+    }
+
+    /**
+     * VM 상태 조회
+     */
+    public ProxmoxVmStatusResponse.StatusData getVmStatus(Integer vmId) {
+        ensureAuthenticated();
+        String node = proxmoxConfig.getNode();
+
+        try {
+            ProxmoxVmStatusResponse response = proxmoxWebClient.get()
+                    .uri("/api2/json/nodes/{node}/qemu/{vmid}/status/current", node, vmId)
+                    .header("Cookie", "PVEAuthCookie=" + ticket)
+                    .header("CSRFPreventionToken", csrfToken)
+                    .retrieve()
+                    .bodyToMono(ProxmoxVmStatusResponse.class)
+                    .block();
+
+            return response != null ? response.getData() : null;
+        } catch (WebClientResponseException.Unauthorized e) {
+            log.warn("토큰 만료, 재인증 후 재시도...");
+            this.ticket = null;
+            this.csrfToken = null;
+            authenticate();
+            return getVmStatus(vmId);
+        }
+    }
+
+    /**
+     * VM 리소스 사용량 조회
+     */
+    public VmResourceUsage getVmResourceUsage(Integer vmId) {
+        ProxmoxVmStatusResponse.StatusData data = getVmStatus(vmId);
+
+        if (data == null) {
             return null;
         }
 
-        ProxmoxVmStatusResponse.StatusData data = response.getData();
         return VmResourceUsage.builder()
                 .vmId(vmId)
                 .cpuUsage(data.getCpu())
@@ -308,39 +337,7 @@ public class ProxmoxApiService {
                 .build();
     }
 
-    /**
-     * Task 완료 대기
-     */
-    public void waitForTask(String upid, int timeoutSeconds) {
-        String node = proxmoxConfig.getNode();
-        log.info("Task 완료 대기 중: {}", upid);
-
-        long startTime = System.currentTimeMillis();
-        long timeout = timeoutSeconds * 1000L;
-
-        while (System.currentTimeMillis() - startTime < timeout) {
-            try {
-                String response = proxmoxWebClient.get()
-                        .uri("/api2/json/nodes/{node}/tasks/{upid}/status", node, upid)
-                        .header("Cookie", "PVEAuthCookie=" + ticket)
-                        .header("CSRFPreventionToken", csrfToken)
-                        .retrieve()
-                        .bodyToMono(String.class)
-                        .block();
-
-                if (response != null && response.contains("\"status\":\"stopped\"")) {
-                    log.info("Task 완료됨: {}", upid);
-                    return;
-                }
-
-                Thread.sleep(2000);  // 2초마다 체크
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
-
-        log.warn("Task 타임아웃 ({}초): {}", timeoutSeconds, upid);
+    private String encodeUri(String value) {
+        return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8);
     }
-
 }

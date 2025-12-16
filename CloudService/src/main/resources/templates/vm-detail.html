@@ -19,9 +19,10 @@
     </div>
 </nav>
 
-<!-- 데이터 전달용 hidden 요소 -->
+<!-- 데이터 전달용 hidden 요소 - proxmoxVmId 추가 -->
 <div id="vmData"
      th:data-vm-id="${vm.id}"
+     th:data-proxmox-vm-id="${vm.proxmoxVmId}"
      th:data-vm-status="${vm.status.name()}"
      style="display:none;"></div>
 
@@ -100,8 +101,8 @@
                     <p class="mb-2">1. VPN에 먼저 연결하세요</p>
                     <p class="mb-2">2. 아래 명령어로 SSH 접속:</p>
                     <code class="d-block bg-dark text-light p-2 rounded"
-                          th:text="'ssh ' + (${vm.ssh != null} ? ${vm.ssh.username} : 'ubuntu') + '@' + ${vm.internalIp}">
-                        ssh ubuntu@192.168.100.10
+                          th:text="'ssh soongsil@' + ${vm.internalIp}">
+                        ssh soongsil@10.8.0.15
                     </code>
                 </div>
             </div>
@@ -161,6 +162,7 @@
     // 데이터 가져오기
     const vmDataEl = document.getElementById('vmData');
     const vmId = vmDataEl.dataset.vmId;
+    const proxmoxVmId = vmDataEl.dataset.proxmoxVmId;  // 추가
     const vmStatus = vmDataEl.dataset.vmStatus;
 
     // 시작 버튼
@@ -216,26 +218,49 @@
         if (vmStatus !== 'RUNNING') return;
 
         try {
-            const response = await fetch('/api/vms/' + vmId + '/monitoring');
+            const response = await fetch('/api/vms/monitoring/proxmox/' + proxmoxVmId);
+
+            if (!response.ok) {
+                document.getElementById('cpuPercent').textContent = '조회 실패';
+                document.getElementById('memPercent').textContent = '조회 실패';
+                document.getElementById('uptime').textContent = 'Proxmox 연결 오류';
+                return;
+            }
+
             const data = await response.json();
 
-            if (data.isSuccess) {
-                const m = data.Result;
-                document.getElementById('cpuPercent').textContent = m.cpuUsagePercent.toFixed(1) + '%';
-                document.getElementById('cpuBar').style.width = m.cpuUsagePercent + '%';
-                document.getElementById('memPercent').textContent =
-                    m.memoryUsedMb + ' / ' + m.memoryTotalMb + ' MB (' + m.memoryUsagePercent.toFixed(1) + '%)';
-                document.getElementById('memBar').style.width = m.memoryUsagePercent + '%';
+            if (data.isSuccess && data.result) {  // Result → result
+                const m = data.result;  // Result → result
 
-                const hours = Math.floor(m.uptimeSeconds / 3600);
-                const minutes = Math.floor((m.uptimeSeconds % 3600) / 60);
+                // CPU
+                const cpuPercent = m.cpuUsagePercent ? m.cpuUsagePercent.toFixed(1) : '0.0';
+                document.getElementById('cpuPercent').textContent = cpuPercent + '%';
+                document.getElementById('cpuBar').style.width = cpuPercent + '%';
+
+                // 메모리
+                const memUsed = m.memoryUsedMb || 0;
+                const memTotal = m.memoryTotalMb || 0;
+                const memPercent = m.memoryUsagePercent ? m.memoryUsagePercent.toFixed(1) : '0.0';
+                document.getElementById('memPercent').textContent = memUsed + ' / ' + memTotal + ' MB (' + memPercent + '%)';
+                document.getElementById('memBar').style.width = memPercent + '%';
+
+                // 가동 시간
+                const uptimeSeconds = m.uptimeSeconds || 0;
+                const hours = Math.floor(uptimeSeconds / 3600);
+                const minutes = Math.floor((uptimeSeconds % 3600) / 60);
                 document.getElementById('uptime').textContent = hours + '시간 ' + minutes + '분';
+            } else {
+                document.getElementById('cpuPercent').textContent = '데이터 없음';
+                document.getElementById('memPercent').textContent = '데이터 없음';
+                document.getElementById('uptime').textContent = '-';
             }
         } catch (error) {
             console.error('모니터링 조회 실패:', error);
+            document.getElementById('cpuPercent').textContent = '연결 오류';
+            document.getElementById('memPercent').textContent = '연결 오류';
+            document.getElementById('uptime').textContent = 'Proxmox 서버 확인 필요';
         }
     }
-
     // 새로고침 버튼
     document.getElementById('refreshBtn').addEventListener('click', refreshMonitoring);
 

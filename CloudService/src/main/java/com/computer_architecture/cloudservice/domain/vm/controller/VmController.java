@@ -100,12 +100,12 @@ public class VmController {
     }
 
     /**
-     * VM 리소스 모니터링
+     * VM 리소스 모니터링 (Proxmox VM ID 사용)
      */
-    @GetMapping("/{vmId}/monitoring")
-    public ApiResponse<VmResponseDto.VmMonitoringInfo> getVmMonitoring(@PathVariable Long vmId) {
+    @GetMapping("/monitoring/proxmox/{proxmoxVmId}")
+    public ApiResponse<VmResponseDto.VmMonitoringInfo> getVmMonitoringByProxmoxId(@PathVariable Integer proxmoxVmId) {
 
-        VmResponseDto.VmMonitoringInfo response = vmService.getVmMonitoring(vmId);
+        VmResponseDto.VmMonitoringInfo response = vmService.getVmMonitoringByProxmoxId(proxmoxVmId);
         return ApiResponse.onSuccess(
                 new SuccessStatus(HttpStatus.OK, "VM200", "모니터링 조회 성공"),
                 response

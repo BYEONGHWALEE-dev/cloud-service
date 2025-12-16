@@ -45,7 +45,7 @@ public class VmServiceImpl implements VmService {
     private int ipRangeEnd;
 
     private static final String IP_PREFIX = "192.168.100.";
-    private static final String DEFAULT_SSH_USER = "ubuntu";
+    private static final String DEFAULT_SSH_USER = "soongsil";
 
     @Override
     @Transactional
@@ -109,7 +109,7 @@ public class VmServiceImpl implements VmService {
         // 9. SSH 인증정보 저장
         String sshKey = request.getSshPublicKey() != null ? request.getSshPublicKey() : "";
         SSHCredential sshCredential = SSHCredential.builder()
-                .username(DEFAULT_SSH_USER)
+                .username("soongsil")  // ubuntu → soongsil
                 .sshKey(sshKey)
                 .build();
         sshCredential.assignToVMachine(savedVm);
@@ -216,18 +216,18 @@ public class VmServiceImpl implements VmService {
      * 사용 가능한 내부 IP 할당
      */
     private String allocateInternalIp() {
-        Set<String> usedIps = vmRepository.findAllUsedInternalIps()
-                .stream()
-                .collect(Collectors.toSet());
+        // 이미 사용 중인 IP 조회
+        List<String> usedIps = vmRepository.findAllUsedInternalIps();
 
-        for (int i = ipRangeStart; i <= ipRangeEnd; i++) {
-            String candidateIp = IP_PREFIX + i;
+        // 192.168.10.15 ~ 192.168.10.99 범위에서 미사용 IP 찾기
+        for (int i = 9; i <= 99; i++) {
+            String candidateIp = "10.8.0." + i;  // 192.168.100 → 192.168.10
             if (!usedIps.contains(candidateIp)) {
                 return candidateIp;
             }
         }
 
-        throw new BaseException(ErrorStatus.BAD_REQUEST);  // IP 풀 소진
+        throw new BaseException(ErrorStatus.INTERNAL_SERVER_ERROR);
     }
 
     /**
@@ -250,6 +250,17 @@ public class VmServiceImpl implements VmService {
                 .orElseThrow(() -> new BaseException(ErrorStatus.NOT_FOUND));
 
         VmResourceUsage usage = proxmoxApiService.getVmResourceUsage(vm.getProxmoxVmId());
+
+        if (usage == null) {
+            throw new BaseException(ErrorStatus.INTERNAL_SERVER_ERROR);
+        }
+
+        return VmResponseDto.VmMonitoringInfo.from(usage);
+    }
+
+    @Override
+    public VmResponseDto.VmMonitoringInfo getVmMonitoringByProxmoxId(Integer proxmoxVmId) {
+        VmResourceUsage usage = proxmoxApiService.getVmResourceUsage(proxmoxVmId);
 
         if (usage == null) {
             throw new BaseException(ErrorStatus.INTERNAL_SERVER_ERROR);

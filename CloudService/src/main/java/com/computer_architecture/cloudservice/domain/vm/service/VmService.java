@@ -27,4 +27,6 @@ public interface VmService {
 
     // 인터페이스에 추가
     VmResponseDto.VmMonitoringInfo getVmMonitoring(Long vmId);
+
+    VmResponseDto.VmMonitoringInfo getVmMonitoringByProxmoxId(Integer proxmoxVmId);
 }

@@ -1,13 +1,9 @@
 spring:
-  application:
-    name: cloudservice
-
   datasource:
-    url: jdbc:mysql://localhost:3306/mydatabase?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul
-    username: myuser
-    password: secret
+    url: jdbc:mysql://localhost:3306/cloudservice?useSSL=false&serverTimezone=Asia/Seoul&allowPublicKeyRetrieval=true
+    username: root
+    password: verysecret
     driver-class-name: com.mysql.cj.jdbc.Driver
-
   jpa:
     hibernate:
       ddl-auto: update
@@ -17,28 +13,24 @@ spring:
         format_sql: true
         dialect: org.hibernate.dialect.MySQLDialect
 
-  security:
-    user:
-      name: admin
-      password: admin
-
-# Proxmox 설정
 proxmox:
-  host: https://192.168.0.22:8006  # Proxmox 호스트 IP로 변경하세요
-  node: byeonghwa                          # 노드 이름
-  username: root@pam                 # Proxmox 사용자명
-  password: skfktkfkd1;            # Proxmox 비밀번호
-  template-vmid: 9000                # 템플릿 VM ID
+  host: https://192.168.0.22:8006
+  node: byeonghwa
+  username: root@pam
+  password: skfktkfkd1;
+  template-vmid: 201
 
-# VM 설정
+# VM 설정 - IP 대역 변경
 vm:
   ip-range:
-    start: 10                        # 192.168.100.10 부터
-    end: 99                          # 192.168.100.99 까지
+    start: 9
+    end: 99
   network:
-    gateway: 192.168.100.1
-    subnet: 192.168.100.0/24
+    gateway: 10.8.0.1              # 변경!
+    subnet: 10.8.0.0/24            # 변경!
     bridge: vmbr1
+  ssh:
+    default-username: soongsil       # ubuntu → soongsil
 
 vpn:
-  host: http://192.168.100.1:8081  # VPN 서버 REST API 주소 (나중에 수정)
+  host: http://192.168.100.1:8081
