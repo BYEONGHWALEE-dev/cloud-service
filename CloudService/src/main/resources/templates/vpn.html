@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VPN - Cloud Service</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+</head>
+<body>
+<!-- 네비게이션 -->
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+    <div class="container">
+        <a class="navbar-brand" href="/dashboard">🖥️ Cloud Service</a>
+        <div class="navbar-nav ms-auto">
+            <a class="nav-link" href="/dashboard">대시보드</a>
+            <a class="nav-link" href="/logout">로그아웃</a>
+        </div>
+    </div>
+</nav>
+
+<div class="container mt-4">
+    <h2 class="mb-4">🔐 VPN 연결</h2>
+
+    <div class="row">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-download"></i> VPN 클라이언트 다운로드</h5>
+                </div>
+                <div class="card-body">
+                    <p>VM에 접속하려면 VPN 연결이 필요합니다.</p>
+                    <ol>
+                        <li>아래 버튼으로 VPN 클라이언트를 다운로드하세요</li>
+                        <li>설정 파일도 함께 다운로드하세요</li>
+                        <li>VPN 클라이언트를 실행하고 연결하세요</li>
+                    </ol>
+
+                    <div class="d-flex gap-2 mt-3">
+                        <a href="/api/vpn/client/download" class="btn btn-primary">
+                            <i class="bi bi-windows"></i> 클라이언트 다운로드 (exe)
+                        </a>
+                        <a th:href="@{'/api/vpn/config/' + ${memberId}}" class="btn btn-outline-primary">
+                            <i class="bi bi-file-earmark-text"></i> 설정 파일 다운로드
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="bi bi-info-circle"></i> 사용 방법</h5>
+                </div>
+                <div class="card-body">
+                    <h6>Windows</h6>
+                    <ol>
+                        <li>다운로드한 <code>vpn-client.exe</code> 실행</li>
+                        <li>설정 파일 (<code>.conf</code>) 불러오기</li>
+                        <li>"연결" 버튼 클릭</li>
+                        <li>연결 후 VM의 내부 IP로 SSH 접속</li>
+                    </ol>
+
+                    <div class="alert alert-info mt-3 mb-0">
+                        <strong>💡 Tip:</strong> VPN 연결 후 <code>ssh ubuntu@192.168.100.x</code> 명령어로 VM에 접속하세요.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-3">
+        <a href="/dashboard" class="btn btn-secondary">← 대시보드로</a>
+    </div>
+</div>
+</body>
+</html>

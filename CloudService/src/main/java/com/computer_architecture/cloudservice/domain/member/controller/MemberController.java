@@ -5,6 +5,7 @@ import com.computer_architecture.cloudservice.domain.member.dto.MemberResponseDt
 import com.computer_architecture.cloudservice.domain.member.service.MemberService;
 import com.computer_architecture.cloudservice.global.apiPayload.ApiResponse;
 import com.computer_architecture.cloudservice.global.apiPayload.code.status.SuccessStatus;
+import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -33,13 +34,19 @@ public class MemberController {
     }
 
     /**
-     * 로그인
+     * 로그인 (세션 저장 추가)
      */
     @PostMapping("/login")
     public ApiResponse<MemberResponseDto.LoginResponse> login(
-            @Valid @RequestBody MemberRequestDto.LoginRequest request) {
+            @Valid @RequestBody MemberRequestDto.LoginRequest request,
+            HttpSession session) {
 
         MemberResponseDto.LoginResponse response = memberService.login(request);
+
+        // 세션에 로그인 정보 저장
+        session.setAttribute("memberId", response.getMemberId());
+        session.setAttribute("memberName", response.getName());
+
         return ApiResponse.onSuccess(
                 new SuccessStatus(HttpStatus.OK, "MEMBER200", "로그인 성공"),
                 response
