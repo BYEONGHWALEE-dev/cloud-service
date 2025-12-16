@@ -24,4 +24,7 @@ public interface VmService {
 
     // VM 삭제
     VmResponseDto.VmSimpleResponse deleteVm(Long vmId);
+
+    // 인터페이스에 추가
+    VmResponseDto.VmMonitoringInfo getVmMonitoring(Long vmId);
 }

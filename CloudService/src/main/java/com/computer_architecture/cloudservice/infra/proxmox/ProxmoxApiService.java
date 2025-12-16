@@ -223,4 +223,88 @@ public class ProxmoxApiService {
     private String encodeUri(String value) {
         return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8);
     }
+
+    // ============ 기존 코드 아래에 추가 ============
+
+    /**
+     * VM 스펙 설정 (CPU, 메모리, 디스크)
+     */
+    public void configureVmSpec(Integer vmId, Integer cpuCores, Integer memoryMb) {
+        ensureAuthenticated();
+
+        String node = proxmoxConfig.getNode();
+        log.info("VM 스펙 설정: vmId={}, cpu={}, memory={}MB", vmId, cpuCores, memoryMb);
+
+        proxmoxWebClient.put()
+                .uri("/api2/json/nodes/{node}/qemu/{vmid}/config", node, vmId)
+                .header("Cookie", "PVEAuthCookie=" + ticket)
+                .header("CSRFPreventionToken", csrfToken)
+                .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                .body(BodyInserters
+                        .fromFormData("cores", String.valueOf(cpuCores))
+                        .with("memory", String.valueOf(memoryMb)))
+                .retrieve()
+                .bodyToMono(String.class)
+                .block();
+
+        log.info("VM 스펙 설정 완료");
+    }
+
+    /**
+     * VM 디스크 리사이즈
+     */
+    public void resizeVmDisk(Integer vmId, Integer diskGb) {
+        ensureAuthenticated();
+
+        String node = proxmoxConfig.getNode();
+        String size = diskGb + "G";
+        log.info("VM 디스크 리사이즈: vmId={}, size={}", vmId, size);
+
+        proxmoxWebClient.put()
+                .uri("/api2/json/nodes/{node}/qemu/{vmid}/resize", node, vmId)
+                .header("Cookie", "PVEAuthCookie=" + ticket)
+                .header("CSRFPreventionToken", csrfToken)
+                .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                .body(BodyInserters
+                        .fromFormData("disk", "scsi0")
+                        .with("size", size))
+                .retrieve()
+                .bodyToMono(String.class)
+                .block();
+
+        log.info("VM 디스크 리사이즈 완료");
+    }
+
+    /**
+     * VM 리소스 사용량 조회 (실시간)
+     */
+    public VmResourceUsage getVmResourceUsage(Integer vmId) {
+        ensureAuthenticated();
+
+        String node = proxmoxConfig.getNode();
+
+        ProxmoxVmStatusResponse response = proxmoxWebClient.get()
+                .uri("/api2/json/nodes/{node}/qemu/{vmid}/status/current", node, vmId)
+                .header("Cookie", "PVEAuthCookie=" + ticket)
+                .header("CSRFPreventionToken", csrfToken)
+                .retrieve()
+                .bodyToMono(ProxmoxVmStatusResponse.class)
+                .block();
+
+        if (response == null || response.getData() == null) {
+            return null;
+        }
+
+        ProxmoxVmStatusResponse.StatusData data = response.getData();
+        return VmResourceUsage.builder()
+                .vmId(vmId)
+                .cpuUsage(data.getCpu())
+                .memoryUsed(data.getMem())
+                .memoryTotal(data.getMaxmem())
+                .diskUsed(data.getDisk())
+                .diskTotal(data.getMaxdisk())
+                .uptime(data.getUptime())
+                .status(data.getStatus())
+                .build();
+    }
 }

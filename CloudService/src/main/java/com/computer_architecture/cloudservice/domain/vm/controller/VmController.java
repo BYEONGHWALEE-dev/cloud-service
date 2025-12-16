@@ -98,4 +98,17 @@ public class VmController {
                 response
         );
     }
+
+    /**
+     * VM 리소스 모니터링
+     */
+    @GetMapping("/{vmId}/monitoring")
+    public ApiResponse<VmResponseDto.VmMonitoringInfo> getVmMonitoring(@PathVariable Long vmId) {
+
+        VmResponseDto.VmMonitoringInfo response = vmService.getVmMonitoring(vmId);
+        return ApiResponse.onSuccess(
+                new SuccessStatus(HttpStatus.OK, "VM200", "모니터링 조회 성공"),
+                response
+        );
+    }
 }

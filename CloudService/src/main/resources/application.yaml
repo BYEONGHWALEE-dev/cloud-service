@@ -39,3 +39,6 @@ vm:
     gateway: 192.168.100.1
     subnet: 192.168.100.0/24
     bridge: vmbr1
+
+vpn:
+  host: http://192.168.100.1:8081  # VPN 서버 REST API 주소 (나중에 수정)

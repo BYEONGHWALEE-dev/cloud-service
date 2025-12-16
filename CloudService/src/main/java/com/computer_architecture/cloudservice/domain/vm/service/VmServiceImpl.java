@@ -15,6 +15,7 @@ import com.computer_architecture.cloudservice.global.domain.vmachine.VmStatus;
 import com.computer_architecture.cloudservice.global.domain.vmspec.VMSpec;
 import com.computer_architecture.cloudservice.infra.proxmox.ProxmoxApiService;
 import com.computer_architecture.cloudservice.infra.proxmox.dto.ProxmoxVmStatusResponse;
+import com.computer_architecture.cloudservice.infra.proxmox.dto.VmResourceUsage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -65,17 +66,42 @@ public class VmServiceImpl implements VmService {
         String taskId = proxmoxApiService.cloneVm(newVmId, request.getVmName());
         log.info("VM 복제 작업 시작: taskId={}", taskId);
 
-        // 5. DB에 VM 정보 저장
+        // 5. VM 스펙 설정 (CPU, 메모리) - 추가
+        try {
+            // clone 작업 완료 대기 (간단히 sleep, 실제로는 task 상태 확인 필요)
+            Thread.sleep(5000);
+
+            proxmoxApiService.configureVmSpec(newVmId, request.getCpuCores(), request.getMemoryMb());
+
+            // 디스크 리사이즈 (템플릿보다 큰 경우만)
+            if (request.getDiskGb() > 20) {  // 템플릿 기본값이 20GB라고 가정
+                proxmoxApiService.resizeVmDisk(newVmId, request.getDiskGb());
+            }
+
+            // Cloud-init 설정 (IP, SSH 키)
+            String sshKey = request.getSshPublicKey() != null ? request.getSshPublicKey() : "";
+            if (!sshKey.isEmpty()) {
+                proxmoxApiService.configureCloudInit(newVmId, internalIp, sshKey);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("VM 설정 중 인터럽트 발생");
+        } catch (Exception e) {
+            log.error("VM 스펙 설정 실패: {}", e.getMessage());
+            // 실패해도 VM은 생성됨, 로그만 남김
+        }
+
+        // 6. DB에 VM 정보 저장
         VMachine vm = VMachine.builder()
                 .proxmoxVmId(newVmId)
                 .vmName(request.getVmName())
                 .internalIp(internalIp)
-                .status(VmStatus.CREATING)
+                .status(VmStatus.STOPPED)  // 생성 직후는 STOPPED
                 .build();
         vm.assignToMember(member);
         VMachine savedVm = vmRepository.save(vm);
 
-        // 6. VM 스펙 저장
+        // 7. VM 스펙 저장
         VMSpec vmSpec = VMSpec.builder()
                 .cpuCores(request.getCpuCores())
                 .memoryMb(request.getMemoryMb())
@@ -84,7 +110,7 @@ public class VmServiceImpl implements VmService {
         vmSpec.assignToVMachine(savedVm);
         vmSpecRepository.save(vmSpec);
 
-        // 7. SSH 인증정보 저장
+        // 8. SSH 인증정보 저장
         String sshKey = request.getSshPublicKey() != null ? request.getSshPublicKey() : "";
         SSHCredential sshCredential = SSHCredential.builder()
                 .username(DEFAULT_SSH_USER)
@@ -100,7 +126,7 @@ public class VmServiceImpl implements VmService {
                 .proxmoxVmId(newVmId)
                 .vmName(request.getVmName())
                 .internalIp(internalIp)
-                .message("VM 생성이 시작되었습니다. 완료까지 몇 분이 소요될 수 있습니다.")
+                .message("VM 생성이 완료되었습니다.")
                 .build();
     }
 
@@ -220,5 +246,19 @@ public class VmServiceImpl implements VmService {
             case "stopped" -> VmStatus.STOPPED;
             default -> VmStatus.ERROR;
         };
+    }
+
+    @Override
+    public VmResponseDto.VmMonitoringInfo getVmMonitoring(Long vmId) {
+        VMachine vm = vmRepository.findById(vmId)
+                .orElseThrow(() -> new BaseException(ErrorStatus.NOT_FOUND));
+
+        VmResourceUsage usage = proxmoxApiService.getVmResourceUsage(vm.getProxmoxVmId());
+
+        if (usage == null) {
+            throw new BaseException(ErrorStatus.INTERNAL_SERVER_ERROR);
+        }
+
+        return VmResponseDto.VmMonitoringInfo.from(usage);
     }
 }

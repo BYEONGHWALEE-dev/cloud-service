@@ -20,5 +20,12 @@ public class ProxmoxVmStatusResponse {
         private Long maxmem;
         private Long maxdisk;
         private Integer cpus;
+
+        private Double cpu;        // CPU 사용률 (0~1)
+        private Long mem;          // 메모리 사용량 (bytes)
+        private Long disk;         // 디스크 사용량 (bytes)
+        private Long uptime;       // 가동 시간 (seconds)
+        private Long netin;        // 네트워크 수신 (bytes)
+        private Long netout;       // 네트워크 송신 (bytes)
     }
 }
