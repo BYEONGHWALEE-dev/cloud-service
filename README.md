@@ -709,29 +709,6 @@ log_level=INFO
 
 ---
 
-## 라이센스
-
-MIT License
-
-Copyright (c) 2025 [Your Name]
-
----
-
-## 기여
-
-이슈 및 Pull Request 환영합니다!
-
----
-
-## 참고 자료
-
-- **WireGuard 논문:** https://www.wireguard.com/papers/wireguard.pdf
-- **libsodium 문서:** https://doc.libsodium.org/
-- **ChaCha20-Poly1305:** RFC 8439
-- **Curve25519:** RFC 7748
-
----
-
 ## 문의
 
 문제가 있으면 GitHub Issues에 등록해주세요.
