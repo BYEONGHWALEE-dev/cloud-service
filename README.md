@@ -708,6 +708,8 @@ log_level=INFO
    - VPN 네트워크와 인터넷 분리
 
 ---
+## 링크
+https://carlota-used-averi.ngrok-free.dev
 
 ## 문의
 
